@@ -125,21 +125,8 @@ const RAW = [
 ];
 
 /* Seeded leave + travel exceptions (person index 1-based, from, to, code) */
-const SEED_LEAVE = [
-  [9,  "2026-07-22", "2026-08-04", "AL",    "Booked before swing"],
-  [10, "2026-07-13", "2026-07-21", "LWOP",  ""],
-  [18, "2026-07-08", "2026-07-14", "LWOP",  ""],
-  [16, "2026-07-16", "2026-07-18", "SL",    "Called in from site"],
-  [26, "2026-07-26", "2026-08-04", "AL",    ""],
-  [19, "2026-07-22", "2026-07-31", "AL",    ""],
-  [21, "2026-07-27", "2026-08-04", "AL",    ""],
-  [7,  "2026-07-28", "2026-07-30", "SL",    ""],
-];
-const SEED_OTHER = [
-  [13, "2026-07-22", "2026-07-22", "TBC"],
-  [5,  "2026-08-05", "2026-08-05", "Nshow"],
-];
-
+const SEED_LEAVE = [];
+const SEED_OTHER = [];
 const USERS = ["Jaki Soutar", "Kiteesha", "Kylie Turner", "Wes Clack", "Greg Jozwicki", "Donna Matiu", "Allan Butson"];
 
 const HORIZON_START = "2026-07-01";
