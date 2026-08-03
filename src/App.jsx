@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import { loadRoster, saveRoster, STORAGE_MODE } from "./storage.js";
+import { loadRoster, saveRoster, STORAGE_MODE } from "./storage.js";import Logo from "./logo.js";
 
 /* ============================================================
    SYNCLINE ROSTER CONTROL v3
@@ -754,7 +754,7 @@ export default function App() {
 
       <div style={{ borderBottom: `3px solid ${C.red}`, background: C.panel, padding: "10px 18px",
         display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-        <img src="/syncline-logo.jpg" alt="Syncline Haulage" style={{ height: 54, width: "auto", display: "block" }} />
+        <img src={LOGO} alt="Syncline Haulage" style={{ height: 54, width: "auto", display: "block" }} />
         <div style={{ borderLeft: `1px solid ${C.line}`, paddingLeft: 16 }}>
           <div style={{ fontFamily: disp, fontSize: 21, fontWeight: 700, letterSpacing: ".05em",
             lineHeight: 1, textTransform: "uppercase" }}>Roster Control</div>
