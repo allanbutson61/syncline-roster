@@ -148,10 +148,32 @@ const PATTERNS = {
   "2:2 nights":{ on: 14, off: 14, travel: true, shift: "NS", label: "14 nights / 14 off" },
   "2:1 nights":{ on: 14, off: 7,  travel: true, shift: "NS", label: "14 nights / 7 off" },
   "8:6 nights":{ on: 8,  off: 6,  travel: true, shift: "NS", label: "8 nights / 6 off" },
-  "7D/7N/14R": { seq: [["1", 7], ["NS", 7], ["RR", 14]], travel: true, label: "7 days / 7 nights / 14 off" },
+  "7D/7N/14R": { seq: [["FIA", 1], ["1", 6], ["NS", 7], ["FOA", 1], ["RR", 13]], travel: false,
+                 label: "fly in, 6 days, 7 nights, fly out AM, 13 off" },
   "5:2":       { office: true, label: "Mon-Fri office" },
   "Ad hoc":    { adhoc: true, label: "No pattern - manual only" },
 };
+
+/* Patterns the office builds themselves are merged in here, so the roster
+   engine and every dropdown see the same list. */
+const PATTERN_REGISTRY = { ...PATTERNS };
+
+function setCustomPatterns(custom) {
+  Object.keys(PATTERN_REGISTRY).forEach((k) => { if (!PATTERNS[k]) delete PATTERN_REGISTRY[k]; });
+  Object.keys(custom || {}).forEach((k) => {
+    const c = custom[k];
+    PATTERN_REGISTRY[k] = { seq: c.seq, travel: false, custom: true,
+      label: c.label || describeSeq(c.seq) };
+  });
+  return PATTERN_REGISTRY;
+}
+
+function describeSeq(seq) {
+  const total = seq.reduce((n, x) => n + x[1], 0);
+  return seq.map(([c, n]) => `${n}${codeText(c) || c}`).join(" + ") + ` = ${total} days`;
+}
+
+const patternNames = () => Object.keys(PATTERN_REGISTRY);
 
 /* ---------- SEED WORKFORCE ---------- */
 
@@ -228,7 +250,7 @@ function patternCode(emp, iso) {
   if (emp.demobDate && iso > emp.demobDate) return null;
   const seg = segmentFor(emp, iso);
   if (!seg) return null;
-  const p = PATTERNS[seg.pattern];
+  const p = PATTERN_REGISTRY[seg.pattern];
   if (!p || p.adhoc) return null;
   if (p.office) return dow(iso) === 0 || dow(iso) === 6 ? "RR" : "GTN";
 
@@ -463,12 +485,14 @@ export default function App() {
   const [confirm, setConfirm] = useState(null);
   const [dismissed, setDismissed] = useState({});
   const [undoStack, setUndoStack] = useState([]);
+  const [customPatterns, setCustomPatterns_] = useState({});
 
   const hydrated = useRef(false);
   const saveTimer = useRef(null);
 
   const snapshot = () => ({
     employees, overrides, leaveRecords, travel, requests, actions, log, thresholds, dismissed,
+    customPatterns,
     savedAt: nowStamp(), savedBy: user || "unknown",
   });
 
@@ -486,6 +510,7 @@ export default function App() {
         if (d.log) setLog(d.log);
         if (d.thresholds) setThresholds(d.thresholds);
         if (d.dismissed) setDismissed(d.dismissed);
+        if (d.customPatterns) setCustomPatterns_(d.customPatterns);
         setSync({ state: "ok", at: d.savedAt, by: d.savedBy });
       } else setSync({ state: "empty", at: null, by: null });
     } catch {
@@ -512,7 +537,7 @@ export default function App() {
     }, 900);
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds, dismissed]);
+  }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds, dismissed, customPatterns]);
 
   const record = useCallback((entry) => {
     setLog((l) => [{ ...entry, at: nowStamp(), by: user || "unsigned" }, ...l].slice(0, 800));
@@ -532,6 +557,8 @@ export default function App() {
     }
     setActions((a) => [item, ...a].slice(0, 300));
   }, [user]);
+
+  useMemo(() => setCustomPatterns(customPatterns), [customPatterns]);
 
   const codeFor = useCallback((emp, iso) => {
     const k = emp.id + "|" + iso;
@@ -617,18 +644,32 @@ export default function App() {
   const daily = useMemo(() =>
     DATES.map((iso) => {
       const counts = {}; METRICS.forEach((m) => (counts[m.id] = 0));
-      let total = 0;
+      let total = 0, opsDay = 0, opsNight = 0;
       employees.forEach((e) => {
         const c = codeFor(e, iso);
         if (!isOnSite(c)) return;
         total++;
+        const night = c === "NS";
+        if (e.category === "Operator") { if (night) opsNight++; else opsDay++; }
         METRICS.forEach((m) => {
           if (!m.test(e)) return;
           if (m.onlyCode && !m.onlyCode(c)) return;
+          /* a leading hand working nights is not covering the day shift */
+          if (m.id === "lead" && night) return;
           counts[m.id]++;
         });
       });
-      return { iso, counts, total };
+
+      /* With no supervisor and no project manager on site, a leading hand
+         steps into the Section 26 role — so they stop counting as an operator. */
+      let acting = false;
+      if (counts.sup === 0 && counts.pm === 0 && counts.lead > 0) {
+        acting = true;
+        counts.s26 = Math.max(counts.s26, 1);
+        if (opsDay > 0) opsDay--; else if (opsNight > 0) opsNight--;
+      }
+      counts.ops = opsDay + opsNight;
+      return { iso, counts, total, opsDay, opsNight, acting };
     }), [employees, codeFor]);
 
   const dayIndex = useMemo(() => { const m = {}; daily.forEach((d, i) => (m[d.iso] = i)); return m; }, [daily]);
@@ -687,7 +728,15 @@ export default function App() {
     setView("grid");
   };
 
+  const leaveClash = (rec) =>
+    leaveRecords.find((r) => r.empId === rec.empId && r.from <= rec.to && r.to >= rec.from);
+
   const addLeave = (rec) => {
+    const clash = leaveClash(rec);
+    if (clash) return { error:
+      `${employees.find((e) => e.id === rec.empId) ? employees.find((e) => e.id === rec.empId).name : "That person"} ` +
+      `already has ${clash.code} from ${fmtShort(clash.from)} to ${fmtShort(clash.to)}. ` +
+      `Remove or shorten that entry first.` };
     const emp = employees.find((e) => e.id === rec.empId);
     const days = rangeDays(rec.from, rec.to);
     const impacted = [];
@@ -704,6 +753,7 @@ export default function App() {
     setLeaveRecords((r) => [...r, { ...rec, id, by: user || "unsigned", at: nowStamp() }]);
     record({ kind: "leave", empId: rec.empId, name: emp ? emp.name : "?", date: `${rec.from} → ${rec.to}`,
       from: "roster", to: `${rec.code} (${days.length}d)`, why: rec.note || "leave entered" });
+    const ok = { error: null };
 
     if (impacted.length || worked) {
       /* find the flights either side, so the message is about the right thing */
@@ -746,6 +796,7 @@ export default function App() {
         body, "travel"
       );
     }
+    return ok;
   };
 
   const removeLeave = (id) => {
@@ -807,7 +858,7 @@ export default function App() {
 
         /* work out which shift this person's pattern runs */
         const seg = segmentFor(emp, r.date);
-        const pat = seg ? PATTERNS[seg.pattern] : null;
+        const pat = seg ? PATTERN_REGISTRY[seg.pattern] : null;
         const shift = pat && pat.shift === "NS" ? "NS" : "1";
 
         if (outDate) {
@@ -825,6 +876,20 @@ export default function App() {
           "return travel still to request");
       });
     });
+  };
+
+  const savePattern = (name, seq) => {
+    setCustomPatterns_((c) => ({ ...c, [name]: { seq, label: describeSeq(seq) } }));
+    record({ kind: "pattern", empId: 0, name: "—", date: "—",
+      from: customPatterns[name] ? "edited" : "new pattern", to: name, why: describeSeq(seq) });
+  };
+
+  const deletePattern = (name) => {
+    const inUse = employees.filter((e) => (e.patterns || []).some((x) => x.pattern === name));
+    if (inUse.length) return { error: `${name} is in use by ${inUse.map((e) => e.name).join(", ")}. Move them to another pattern first.` };
+    setCustomPatterns_((c) => { const n = { ...c }; delete n[name]; return n; });
+    record({ kind: "pattern", empId: 0, name: "—", date: "—", from: name, to: "deleted", why: "pattern removed" });
+    return { error: null };
   };
 
   const addPerson = (p) => {
@@ -1026,7 +1091,8 @@ export default function App() {
         {view === "requests" && <Requests {...{ employees, requests, submitRequest, markRequested,
           declineRequest, codeFor, focusDate, problemsFromChanges }} />}
         {view === "people" && <People {...{ employees, updateEmployee, changePattern,
-          removePatternSegment, thresholds, setThresholds, focusDate, addPerson }} />}
+          removePatternSegment, thresholds, setThresholds, focusDate, addPerson,
+          customPatterns, savePattern, deletePattern }} />}
         {view === "audit" && <Audit {...{ log }} />}
       </div>
 
@@ -1086,8 +1152,20 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
   const [alertType, setAlertType] = useState("All");
   const openActions = actions.filter((a) => !a.done);
 
-  const filteredAlerts = upcoming.filter((a) =>
-    a.iso >= alertFrom && a.iso <= alertTo && (alertType === "All" || a.metric === alertType));
+  const filteredAlerts = useMemo(() => {
+    const rows = upcoming
+      .filter((a) => a.iso >= alertFrom && a.iso <= alertTo && (alertType === "All" || a.metric === alertType))
+      .sort((a, b) => (a.metric === b.metric ? (a.iso < b.iso ? -1 : 1) : a.metric < b.metric ? -1 : 1));
+    /* consecutive days of the same shortfall read as one line */
+    const out = [];
+    rows.forEach((a) => {
+      const last = out[out.length - 1];
+      if (last && last.metric === a.metric && last.have === a.have && last.need === a.need
+        && diffDays(a.iso, last.to) === 1) { last.to = a.iso; last.days++; return; }
+      out.push({ ...a, to: a.iso, days: 1 });
+    });
+    return out.sort((a, b) => (a.iso < b.iso ? -1 : 1));
+  }, [upcoming, alertFrom, alertTo, alertType]);
 
   return (
     <div style={{ display: "grid", gap: 18 }}>
@@ -1096,8 +1174,10 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
         {METRICS.map((m) => {
           const have = today.counts[m.id], min = thresholds[m.id];
           const state = !min ? "" : have < min ? (have === 0 ? "bad" : "warn") : "ok";
-          return <Tile key={m.id} label={m.name} value={have}
-            sub={min ? `min ${min}${have < min ? ` · short ${min - have}` : ""}` : "no minimum"}
+          const sub = m.id === "ops"
+            ? `${today.opsDay} DS · ${today.opsNight} NS${today.acting ? " · 1 acting §26" : ""}`
+            : min ? `min ${min}${have < min ? ` · short ${min - have}` : ""}` : "no minimum";
+          return <Tile key={m.id} label={m.name} value={have} sub={sub}
             state={state} onClick={() => jumpTo(focusDate)} />;
         })}
         <Tile label="Travel to request" value={toRequestCount} sub="not yet sent to travel team"
@@ -1151,9 +1231,12 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
               <div key={i} onClick={() => jumpTo(a.iso)} style={{ display: "flex", alignItems: "center", gap: 12,
                 padding: "8px 14px", borderBottom: `1px solid ${C.line}`, cursor: "pointer",
                 borderLeft: `3px solid ${a.sev === "critical" ? C.red : C.orange}` }}>
-                <div style={{ fontFamily: mono, fontSize: 11, color: C.dim, width: 88 }}>
-                  {DOW[dow(a.iso)]} {fmtShort(a.iso)}</div>
-                <div style={{ fontSize: 12.5, flex: 1 }}>{a.name}</div>
+                <div style={{ fontFamily: mono, fontSize: 11, color: C.dim, width: 128 }}>
+                  {a.days > 1 ? `${fmtShort(a.iso)} – ${fmtShort(a.to)}` : `${DOW[dow(a.iso)]} ${fmtShort(a.iso)}`}
+                </div>
+                <div style={{ fontSize: 12.5, flex: 1 }}>{a.name}
+                  {a.days > 1 && <span style={{ fontFamily: mono, fontSize: 10.5, color: C.dim,
+                    marginLeft: 7 }}>{a.days} days</span>}</div>
                 <div style={{ fontFamily: mono, fontSize: 12, color: a.sev === "critical" ? C.red : C.dim }}>
                   {a.have} / {a.need}</div>
               </div>
@@ -1535,8 +1618,9 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate }) {
 
   const submit = () => {
     if (to < from) { setErr("End date is before the start date."); return; }
+    const res = addLeave({ empId: Number(empId), code, from, to, note });
+    if (res && res.error) { setErr(res.error); return; }
     setErr("");
-    addLeave({ empId: Number(empId), code, from, to, note });
     setNote("");
   };
 
@@ -1713,14 +1797,21 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
   const th = { textAlign: "left", padding: "6px 8px", fontFamily: disp, fontSize: 11.5,
     letterSpacing: ".1em", color: C.dim, textTransform: "uppercase", borderBottom: `1px solid ${C.line2}` };
   const td = { padding: "5px 8px", borderBottom: `1px solid ${C.line}`, fontSize: 12 };
-  const travelActions = actions.filter((a) => a.kind === "travel")
-    .sort((a, b) => (a.done === b.done ? 0 : a.done ? 1 : -1));
+  const [showDone, setShowDone] = useState(false);
+  const allTravelActions = actions.filter((a) => a.kind === "travel");
+  const travelActions = showDone ? allTravelActions : allTravelActions.filter((a) => !a.done);
+  const doneCount = allTravelActions.filter((a) => a.done).length;
 
   return (
     <div style={{ display: "grid", gap: 18 }}>
-      {travelActions.length > 0 && (
+      {allTravelActions.length > 0 && (
         <Panel title="Travel actions required"
-          note={`${travelActions.filter((a) => !a.done).length} open · tick once requested with FMG`} pad={0}>
+          note={`${allTravelActions.filter((a) => !a.done).length} open · tick once requested with FMG`} pad={0}>
+          <div style={{ padding: "8px 16px", borderBottom: `1px solid ${C.line}`, background: C.panel2 }}>
+            <Btn small active={showDone} onClick={() => setShowDone(!showDone)}>
+              {showDone ? "Hide completed" : `Show completed (${doneCount})`}
+            </Btn>
+          </div>
           {travelActions.slice(0, 20).map((a) => (
             <div key={a.id} style={{ padding: "10px 16px", borderBottom: `1px solid ${C.line}`,
               borderLeft: `3px solid ${a.done ? C.ok : C.orange}`, opacity: a.done ? 0.6 : 1 }}>
@@ -2080,7 +2171,7 @@ function StripCells({ cells }) {
    ============================================================ */
 
 function People({ employees, updateEmployee, changePattern, removePatternSegment, thresholds,
-  setThresholds, focusDate, addPerson }) {
+  setThresholds, focusDate, addPerson, customPatterns, savePattern, deletePattern }) {
   const [pEmp, setPEmp] = useState(employees[6] ? employees[6].id : 1);
   const [pPattern, setPPattern] = useState("2:1");
   const [pFrom, setPFrom] = useState(focusDate);
@@ -2104,7 +2195,7 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
           </Field>
           <Field label="New pattern">
             <select value={pPattern} onChange={(e) => setPPattern(e.target.value)} style={{ width: "100%" }}>
-              {Object.keys(PATTERNS).map((p) => <option key={p} value={p}>{p} · {PATTERNS[p].label}</option>)}
+              {patternNames().map((p) => <option key={p} value={p}>{p} · {PATTERN_REGISTRY[p].label}</option>)}
             </select>
           </Field>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -2159,6 +2250,8 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
         </Panel>
       </div>
 
+      <PatternBuilder {...{ customPatterns, savePattern, deletePattern }} />
+
       <AddPerson employees={employees} addPerson={addPerson} focusDate={focusDate} />
 
       <Panel title="Personnel" note="mobilisation and demobilisation dates drive the roster" pad={0}>
@@ -2200,6 +2293,120 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
         </div>
       </Panel>
     </div>
+  );
+}
+
+const SEQ_CODES = [
+  ["FIA", "Fly in AM"], ["FIP", "Fly in PM"], ["DIA", "Drive in AM"],
+  ["1", "Day shift"], ["NS", "Night shift"],
+  ["FOA", "Fly out AM"], ["FOP", "Fly out PM"], ["DOP", "Drive out PM"],
+  ["RR", "R & R"], ["RDO", "Rostered day off"],
+];
+
+function PatternBuilder({ customPatterns, savePattern, deletePattern }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [seq, setSeq] = useState([["FIA", 1], ["1", 6], ["NS", 7], ["FOA", 1], ["RR", 13]]);
+  const [err, setErr] = useState("");
+
+  const total = seq.reduce((n, x) => n + Number(x[1] || 0), 0);
+  const setRow = (i, j, v) => setSeq((q) => q.map((r, k) => (k === i ? (j ? [r[0], v] : [v, r[1]]) : r)));
+
+  const loadExisting = (n) => {
+    setName(n);
+    setSeq((PATTERN_REGISTRY[n] && PATTERN_REGISTRY[n].seq)
+      ? PATTERN_REGISTRY[n].seq.map((x) => [x[0], x[1]])
+      : [["FIA", 1], ["1", 6], ["RR", 7]]);
+  };
+
+  const submit = () => {
+    if (!name.trim()) { setErr("Give the pattern a name, e.g. 7D/7N/14R."); return; }
+    if (total < 2) { setErr("The cycle needs at least two days."); return; }
+    if (seq.some((r) => !r[1] || Number(r[1]) < 1)) { setErr("Every block needs at least one day."); return; }
+    setErr("");
+    savePattern(name.trim(), seq.map((r) => [r[0], Number(r[1])]));
+    setOpen(false);
+  };
+
+  const remove = (n) => {
+    const res = deletePattern(n);
+    if (res && res.error) setErr(res.error);
+  };
+
+  if (!open) {
+    return (
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <Btn onClick={() => setOpen(true)}>Roster patterns</Btn>
+        <span style={{ fontFamily: mono, fontSize: 11, color: C.dim }}>
+          {patternNames().length} patterns · {Object.keys(customPatterns).length} built here
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <Panel title="Roster patterns" note="build a new one, or edit one you built">
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 20 }}>
+        <div>
+          <Field label="Pattern name">
+            <input value={name} onChange={(e) => setName(e.target.value)}
+              placeholder="7D/7N/14R" style={{ width: "100%" }} />
+          </Field>
+          <Field label="The cycle, in order">
+            {seq.map((r, i) => (
+              <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                <select value={r[0]} onChange={(e) => setRow(i, 0, e.target.value)} style={{ flex: 1 }}>
+                  {SEQ_CODES.map(([c, l]) => <option key={c} value={c}>{codeText(c)} — {l}</option>)}
+                </select>
+                <input type="number" min="1" max="60" value={r[1]}
+                  onChange={(e) => setRow(i, 1, e.target.value)} style={{ width: 64 }} />
+                <span style={{ fontFamily: mono, fontSize: 11, color: C.dim }}>days</span>
+                {seq.length > 1 && (
+                  <Btn small danger onClick={() => setSeq((q) => q.filter((_, k) => k !== i))}>×</Btn>
+                )}
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <Btn small onClick={() => setSeq((q) => [...q, ["1", 1]])}>Add a block</Btn>
+              <span style={{ fontFamily: mono, fontSize: 11, color: total % 7 ? C.orange : C.ok }}>
+                cycle = {total} days{total % 7 ? " — not a whole number of weeks" : ""}
+              </span>
+            </div>
+          </Field>
+          {err && <div style={{ color: C.red, fontFamily: mono, fontSize: 11.5, marginBottom: 8 }}>{err}</div>}
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn primary onClick={submit}>Save pattern</Btn>
+            <Btn onClick={() => { setOpen(false); setErr(""); }}>Close</Btn>
+          </div>
+          <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 12, lineHeight: 1.55 }}>
+            Put the travel days in the cycle where they actually fall. 7D/7N/14R is fly in, 6 day
+            shifts, 7 nights, fly out AM, then 13 off — 28 days all up. Saving under an existing name
+            replaces it, and everyone on that pattern re-rolls.
+          </div>
+        </div>
+
+        <div>
+          <div style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim,
+            textTransform: "uppercase", marginBottom: 6 }}>Existing patterns</div>
+          {patternNames().map((n) => {
+            const pt = PATTERN_REGISTRY[n];
+            return (
+              <div key={n} style={{ display: "flex", gap: 8, alignItems: "center", padding: "5px 0",
+                borderBottom: `1px solid ${C.line}`, fontSize: 12.5 }}>
+                <span style={{ fontWeight: 600, minWidth: 92 }}>{n}</span>
+                <span style={{ flex: 1, color: C.dim, fontSize: 11.5 }}>{pt.label}</span>
+                {pt.seq && <Btn small onClick={() => loadExisting(n)}>Edit</Btn>}
+                {pt.custom && <Btn small danger onClick={() => remove(n)}>×</Btn>}
+              </div>
+            );
+          })}
+          <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 10, lineHeight: 1.55 }}>
+            Built-in patterns can be opened with Edit and saved under a new name. Patterns someone is
+            working can't be deleted until they are moved off it.
+          </div>
+        </div>
+      </div>
+    </Panel>
   );
 }
 
@@ -2262,7 +2469,7 @@ function AddPerson({ employees, addPerson, focusDate }) {
         </Field>
         <Field label="Roster pattern">
           <select value={f.pattern} onChange={(e) => set("pattern", e.target.value)} style={{ width: "100%" }}>
-            {Object.keys(PATTERNS).map((x) => <option key={x} value={x}>{x} · {PATTERNS[x].label}</option>)}
+            {patternNames().map((x) => <option key={x} value={x}>{x} · {PATTERN_REGISTRY[x].label}</option>)}
           </select>
         </Field>
         <Field label="Mobilisation date">
@@ -2363,3 +2570,4 @@ function Audit({ log }) {
     </div>
   );
 }
+
