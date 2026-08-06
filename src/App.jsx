@@ -1,7 +1,6 @@
 
 
 
-
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { loadRoster, saveRoster, STORAGE_MODE } from "./storage.js";
 import LOGO from "./logo.js";
@@ -140,13 +139,16 @@ function codeStyle(code) {
 /* ---------- PATTERNS ---------- */
 
 const PATTERNS = {
-  "2:2":       { on: 14, off: 14, travel: true, label: "14 on / 14 off" },
-  "2:1":       { on: 14, off: 7,  travel: true, label: "14 on / 7 off" },
-  "3:1":       { on: 21, off: 7,  travel: true, label: "21 on / 7 off" },
-  "8:6":       { on: 8,  off: 6,  travel: true, label: "8 on / 6 off" },
-  "9:5":       { on: 9,  off: 5,  travel: true, label: "9 on / 5 off" },
-  "4:3":       { on: 4,  off: 3,  travel: true, label: "4 on / 3 off" },
-  "7D/7N/14R": { seq: [["1", 7], ["NS", 7], ["RR", 14]], travel: true, label: "7 day / 7 night / 14 off" },
+  "2:2":       { on: 14, off: 14, travel: true, label: "14 days / 14 off" },
+  "2:1":       { on: 14, off: 7,  travel: true, label: "14 days / 7 off" },
+  "3:1":       { on: 21, off: 7,  travel: true, label: "21 days / 7 off" },
+  "8:6":       { on: 8,  off: 6,  travel: true, label: "8 days / 6 off" },
+  "9:5":       { on: 9,  off: 5,  travel: true, label: "9 days / 5 off" },
+  "4:3":       { on: 4,  off: 3,  travel: true, label: "4 days / 3 off" },
+  "2:2 nights":{ on: 14, off: 14, travel: true, shift: "NS", label: "14 nights / 14 off" },
+  "2:1 nights":{ on: 14, off: 7,  travel: true, shift: "NS", label: "14 nights / 7 off" },
+  "8:6 nights":{ on: 8,  off: 6,  travel: true, shift: "NS", label: "8 nights / 6 off" },
+  "7D/7N/14R": { seq: [["1", 7], ["NS", 7], ["RR", 14]], travel: true, label: "7 days / 7 nights / 14 off" },
   "5:2":       { office: true, label: "Mon-Fri office" },
   "Ad hoc":    { adhoc: true, label: "No pattern - manual only" },
 };
@@ -231,7 +233,7 @@ function patternCode(emp, iso) {
   if (p.office) return dow(iso) === 0 || dow(iso) === 6 ? "RR" : "GTN";
 
   const n = diffDays(iso, seg.anchor);
-  const base = emp.defaultShift === "NS" ? "NS" : "1";
+  const base = p.shift === "NS" ? "NS" : "1";
 
   if (p.seq) {
     const cycle = p.seq.reduce((s, x) => s + x[1], 0);
@@ -428,7 +430,6 @@ export default function App() {
       return {
         id: i + 1, name: r[0], alias: r[1], category: r[2], position: r[3],
         poh: r[4], crew: r[5],
-        defaultShift: r[7] ? "NS" : "DS",
         patterns: [{ from: "2000-01-01", pattern: r[6], anchor: r[8] }],
         mobeDate: r[9], demobDate: "",
         grader: pos.includes("grader"), leadingHand: pos.includes("leading hand"),
@@ -460,12 +461,14 @@ export default function App() {
   const [picked, setPicked] = useState([]);
   const [sync, setSync] = useState({ state: "idle", at: null, by: null });
   const [confirm, setConfirm] = useState(null);
+  const [dismissed, setDismissed] = useState({});
+  const [undoStack, setUndoStack] = useState([]);
 
   const hydrated = useRef(false);
   const saveTimer = useRef(null);
 
   const snapshot = () => ({
-    employees, overrides, leaveRecords, travel, requests, actions, log, thresholds,
+    employees, overrides, leaveRecords, travel, requests, actions, log, thresholds, dismissed,
     savedAt: nowStamp(), savedBy: user || "unknown",
   });
 
@@ -482,6 +485,7 @@ export default function App() {
         if (d.actions) setActions(d.actions);
         if (d.log) setLog(d.log);
         if (d.thresholds) setThresholds(d.thresholds);
+        if (d.dismissed) setDismissed(d.dismissed);
         setSync({ state: "ok", at: d.savedAt, by: d.savedBy });
       } else setSync({ state: "empty", at: null, by: null });
     } catch {
@@ -508,7 +512,7 @@ export default function App() {
     }, 900);
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds]);
+  }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds, dismissed]);
 
   const record = useCallback((entry) => {
     setLog((l) => [{ ...entry, at: nowStamp(), by: user || "unsigned" }, ...l].slice(0, 800));
@@ -537,6 +541,18 @@ export default function App() {
 
   const codeForRef = useRef(codeFor);
   useEffect(() => { codeForRef.current = codeFor; }, [codeFor]);
+  const overridesRef = useRef(overrides);
+  useEffect(() => { overridesRef.current = overrides; }, [overrides]);
+
+  const undo = () => {
+    setUndoStack((u) => {
+      if (!u.length) return u;
+      setOverrides(u[0].overrides);
+      record({ kind: "cell", empId: 0, name: "—", date: "—",
+        from: u[0].label, to: "undone", why: "undo" });
+      return u.slice(1);
+    });
+  };
 
   const applyCell = useCallback((empId, iso, code, why) => {
     const emp = employees.find((e) => e.id === empId);
@@ -544,6 +560,8 @@ export default function App() {
     const before = codeForRef.current(emp, iso);
     const after = code === "__clear" ? patternCode(emp, iso) : code;
     if (before === after) return;
+    setUndoStack((u) => [{ overrides: overridesRef.current,
+      label: `${emp.name} ${fmtShort(iso)} → ${after || "pattern"}` }, ...u].slice(0, 40));
     setOverrides((o) => {
       const n = { ...o };
       if (code === "__clear") delete n[empId + "|" + iso];
@@ -619,8 +637,17 @@ export default function App() {
   const anomalies = useMemo(() => {
     const out = [];
     employees.forEach((e) => out.push(...checkEmployee(e, codeFor, DATES)));
-    return out.sort((a, b) => (a.iso < b.iso ? -1 : 1));
-  }, [employees, codeFor]);
+    return out
+      .filter((a) => !dismissed[a.empId + "|" + a.iso + "|" + a.msg])
+      .sort((a, b) => (a.iso < b.iso ? -1 : 1));
+  }, [employees, codeFor, dismissed]);
+
+  const dismissAnomaly = (a) => {
+    setDismissed((d) => ({ ...d, [a.empId + "|" + a.iso + "|" + a.msg]:
+      { by: user || "unsigned", at: nowStamp() } }));
+    record({ kind: "check", empId: a.empId, name: a.name, date: a.iso,
+      from: "flagged", to: "checked and cleared", why: a.msg });
+  };
 
   const toRequestCount = useMemo(() => {
     let n = 0;
@@ -653,7 +680,12 @@ export default function App() {
     return () => window.removeEventListener("mouseup", up);
   }, []);
 
-  const jumpTo = (iso) => { setFocusDate(iso); setGridStart(addDays(iso, -3)); setView("grid"); };
+  const jumpTo = (iso, empId) => {
+    setFocusDate(iso);
+    setGridStart(addDays(iso, -5));
+    if (empId) { setPicked([empId]); setSearch(""); setCrewFilter("All"); setCatFilter("All"); }
+    setView("grid");
+  };
 
   const addLeave = (rec) => {
     const emp = employees.find((e) => e.id === rec.empId);
@@ -665,6 +697,8 @@ export default function App() {
     });
     const worked = days.filter((d) => isWorkDay(codeFor(emp, d))).length;
 
+    setUndoStack((u) => [{ overrides: overridesRef.current,
+      label: `${emp ? emp.name : "?"} leave ${fmtShort(rec.from)}–${fmtShort(rec.to)}` }, ...u].slice(0, 40));
     setOverrides((o) => { const n = { ...o }; days.forEach((d) => (n[rec.empId + "|" + d] = rec.code)); return n; });
     const id = "L" + Date.now();
     setLeaveRecords((r) => [...r, { ...rec, id, by: user || "unsigned", at: nowStamp() }]);
@@ -672,16 +706,44 @@ export default function App() {
       from: "roster", to: `${rec.code} (${days.length}d)`, why: rec.note || "leave entered" });
 
     if (impacted.length || worked) {
-      const lines = impacted.length
-        ? impacted.map((x) => `  ${fmtShort(x.date)} — ${x.code} (${CODES[x.code] ? CODES[x.code].label : ""})`).join("\n")
-        : "  no travel currently booked inside the leave range";
+      /* find the flights either side, so the message is about the right thing */
+      let inBefore = null, outAfter = null;
+      for (let i = 1; i <= 30 && !inBefore; i++) {
+        const c = codeFor(emp, addDays(rec.from, -i));
+        if (dirOf(c) === "IN") inBefore = { date: addDays(rec.from, -i), code: c };
+        else if (dirOf(c) === "OUT") break;
+      }
+      for (let i = 1; i <= 30 && !outAfter; i++) {
+        const c = codeFor(emp, addDays(rec.to, i));
+        if (dirOf(c) === "OUT") outAfter = { date: addDays(rec.to, i), code: c };
+        else if (dirOf(c) === "IN") break;
+      }
+
+      let body;
+      if (impacted.length) {
+        body =
+          `${emp ? emp.name : "?"} is on ${rec.code} from ${fmtLong(rec.from)} to ${fmtLong(rec.to)}.\n\n` +
+          `Travel inside the leave:\n` +
+          impacted.map((x) => `  ${fmtShort(x.date)} — ${x.code} (${CODES[x.code] ? CODES[x.code].label : ""})`).join("\n") +
+          `\n\nAction: cancel or reschedule those movements, and review camp accommodation.`;
+      } else if (worked) {
+        const ctx = [];
+        if (inBefore) ctx.push(`  travels in ${fmtShort(inBefore.date)} — ${inBefore.code}`);
+        if (outAfter) ctx.push(`  travels out ${fmtShort(outAfter.date)} — ${outAfter.code}`);
+        body =
+          `${emp ? emp.name : "?"} is on ${rec.code} from ${fmtLong(rec.from)} to ${fmtLong(rec.to)}, ` +
+          `covering ${worked} rostered work day(s).\n\n` +
+          `No flights fall inside the leave, so nothing needs cancelling on those dates.\n\n` +
+          (ctx.length ? `The surrounding swing:\n${ctx.join("\n")}\n\n` : "") +
+          `Action: check whether the swing still works around the leave, and review camp ` +
+          `accommodation for those nights only.`;
+      } else {
+        body = `${emp ? emp.name : "?"} is on ${rec.code} from ${fmtLong(rec.from)} to ${fmtLong(rec.to)}.`;
+      }
+
       notify(
-        `Travel change needed — ${emp ? emp.name : "?"} ${fmtShort(rec.from)} to ${fmtShort(rec.to)}`,
-        `${emp ? emp.name : "?"} has been put on ${rec.code} from ${fmtLong(rec.from)} to ${fmtLong(rec.to)}.\n\n` +
-        `Travel affected:\n${lines}\n\n` +
-        `${worked} rostered work day(s) fall inside this leave.\n\n` +
-        `Action: cancel or reschedule the flights above and review camp accommodation for those nights.`,
-        "travel"
+        `${impacted.length ? "Travel change needed" : "Check the swing"} — ${emp ? emp.name : "?"} ${fmtShort(rec.from)} to ${fmtShort(rec.to)}`,
+        body, "travel"
       );
     }
   };
@@ -710,6 +772,77 @@ export default function App() {
     });
   };
 
+  /* Applies a batch of confirmed travel and fills the swing between the
+     movements with work days from that person's pattern. */
+  const applyTravelBatch = (rows) => {
+    const now = codeForRef.current;
+    const byEmp = {};
+    rows.forEach((r) => {
+      if (!r.empId || !r.date) return;
+      (byEmp[r.empId] = byEmp[r.empId] || []).push(r);
+    });
+
+    Object.keys(byEmp).forEach((key) => {
+      const empId = Number(key);
+      const emp = employees.find((e) => e.id === empId);
+      if (!emp) return;
+      const list = byEmp[key].slice().sort((a, b) => (a.date < b.date ? -1 : 1));
+
+      list.forEach((r) => applyCell(empId, r.date, travelCode(r.movement, r.state),
+        `FMG travel${r.flight ? " " + r.flight : ""}`));
+
+      list.forEach((r) => {
+        if (MOVEMENTS[r.movement].dir !== "IN") return;
+
+        /* the matching departure: in this batch first, then the existing roster */
+        let outDate = (list.find((x) => x.date > r.date && MOVEMENTS[x.movement].dir === "OUT") || {}).date;
+        if (!outDate) {
+          for (let i = 1; i <= 35; i++) {
+            const d = addDays(r.date, i);
+            const c = now(emp, d);
+            if (dirOf(c) === "OUT") { outDate = d; break; }
+            if (dirOf(c) === "IN") break;
+          }
+        }
+
+        /* work out which shift this person's pattern runs */
+        const seg = segmentFor(emp, r.date);
+        const pat = seg ? PATTERNS[seg.pattern] : null;
+        const shift = pat && pat.shift === "NS" ? "NS" : "1";
+
+        if (outDate) {
+          for (let d = addDays(r.date, 1); d < outDate; d = addDays(d, 1))
+            applyCell(empId, d, shift, "site days filled from pattern");
+          return;
+        }
+
+        /* no departure anywhere — fill the swing length and flag the fly-out
+           as still to request */
+        const len = pat && pat.on ? pat.on : 14;
+        for (let i = 1; i < len - 1; i++)
+          applyCell(empId, addDays(r.date, i), shift, "site days filled from pattern");
+        applyCell(empId, addDays(r.date, len - 1), travelCode("FOP", "toRequest"),
+          "return travel still to request");
+      });
+    });
+  };
+
+  const addPerson = (p) => {
+    const id = Math.max(0, ...employees.map((e) => e.id)) + 1;
+    const pos = (p.position || "").toLowerCase();
+    const person = {
+      id, name: p.name, alias: p.alias || "", category: p.category,
+      position: p.position, poh: p.poh || "", crew: p.crew || "A",
+      patterns: [{ from: "2000-01-01", pattern: p.pattern, anchor: p.anchor }],
+      mobeDate: p.mobeDate || "", demobDate: "",
+      grader: pos.includes("grader"), leadingHand: pos.includes("leading hand"),
+      s26: p.category === "Supervisor" || p.category === "Project Manager",
+    };
+    setEmployees((es) => [...es, person]);
+    record({ kind: "person", empId: id, name: p.name, date: p.mobeDate || "—",
+      from: "—", to: `${p.category} · ${p.crew} · ${p.pattern}`, why: "person added" });
+  };
+
   const changePattern = (empId, from, pattern, anchor) => {
     const emp = employees.find((e) => e.id === empId);
     if (!emp) return;
@@ -718,6 +851,8 @@ export default function App() {
       .sort((a, b) => (a.from < b.from ? -1 : 1));
     setEmployees((es) => es.map((e) => (e.id === empId ? { ...e, patterns: segs } : e)));
     let kept = 0;
+    setUndoStack((u) => [{ overrides: overridesRef.current,
+      label: `${emp.name} pattern → ${pattern}` }, ...u].slice(0, 40));
     setOverrides((o) => {
       const n = {};
       Object.keys(o).forEach((k) => {
@@ -776,6 +911,11 @@ export default function App() {
     });
     setRequests((rs) => rs.map((r) => r.id === reqId
       ? { ...r, status: "rescheduled", actionedBy: user || "unsigned", actionedAt: nowStamp() } : r));
+  };
+
+  const markActionDone = (id) => {
+    setActions((as) => as.map((a) => a.id === id
+      ? { ...a, done: true, doneBy: user || "unsigned", doneAt: nowStamp() } : a));
   };
 
   const declineRequest = (reqId) => {
@@ -873,17 +1013,20 @@ export default function App() {
 
       <div style={{ padding: 18 }}>
         {view === "dash" && <Dashboard {...{ today, daily, dayIndex, focusDate, setFocusDate,
-          thresholds, upcoming, upcomingAnomalies, jumpTo, toRequestCount, setView }} />}
+          thresholds, upcoming, upcomingAnomalies, jumpTo, toRequestCount, setView,
+          dismissAnomaly, actions, markActionDone, employees }} />}
         {view === "grid" && <Grid {...{ visibleEmployees, employees, gridStart, setGridStart, gridDays,
           setGridDays, cellW, setCellW, codeFor, setCell, brush, setBrush, painting, setPainting, daily, dayIndex,
+          undo, undoStack,
           thresholds, crews, cats, crewFilter, setCrewFilter, catFilter, setCatFilter, search,
           setSearch, picked, setPicked, focusDate, setFocusDate, overrides, menu, setMenu, anomalies }} />}
         {view === "leave" && <Leave {...{ employees, leaveRecords, addLeave, removeLeave, focusDate }} />}
-        {view === "travel" && <Travel {...{ employees, travel, setTravel, setCell, actions, user }} />}
+        {view === "travel" && <Travel {...{ employees, travel, setTravel, setCell, actions, user,
+          applyTravelBatch, markActionDone }} />}
         {view === "requests" && <Requests {...{ employees, requests, submitRequest, markRequested,
           declineRequest, codeFor, focusDate, problemsFromChanges }} />}
         {view === "people" && <People {...{ employees, updateEmployee, changePattern,
-          removePatternSegment, thresholds, setThresholds, focusDate }} />}
+          removePatternSegment, thresholds, setThresholds, focusDate, addPerson }} />}
         {view === "audit" && <Audit {...{ log }} />}
       </div>
 
@@ -932,10 +1075,19 @@ export default function App() {
    ============================================================ */
 
 function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds, upcoming,
-  upcomingAnomalies, jumpTo, toRequestCount, setView }) {
+  upcomingAnomalies, jumpTo, toRequestCount, setView, dismissAnomaly, actions, markActionDone,
+  employees }) {
   const railStart = Math.max(0, (dayIndex[focusDate] || 0) - 7);
   const rail = daily.slice(railStart, railStart + 90);
   const maxOps = Math.max(12, ...rail.map((d) => d.counts.ops));
+
+  const [alertFrom, setAlertFrom] = useState(focusDate);
+  const [alertTo, setAlertTo] = useState(addDays(focusDate, 90));
+  const [alertType, setAlertType] = useState("All");
+  const openActions = actions.filter((a) => !a.done);
+
+  const filteredAlerts = upcoming.filter((a) =>
+    a.iso >= alertFrom && a.iso <= alertTo && (alertType === "All" || a.metric === alertType));
 
   return (
     <div style={{ display: "grid", gap: 18 }}>
@@ -981,11 +1133,21 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
       </Panel>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 18 }}>
-        <Panel title="Coverage alerts" note={`from ${fmtShort(focusDate)}`} pad={0}>
+        <Panel title="Coverage alerts" note={`${filteredAlerts.length} in range`} pad={0}>
+          <div style={{ padding: "9px 14px", borderBottom: `1px solid ${C.line}`, display: "flex",
+            gap: 8, alignItems: "center", flexWrap: "wrap", background: C.panel2 }}>
+            <input type="date" value={alertFrom} onChange={(e) => setAlertFrom(e.target.value)} />
+            <span style={{ fontFamily: mono, fontSize: 11, color: C.dim }}>to</span>
+            <input type="date" value={alertTo} onChange={(e) => setAlertTo(e.target.value)} />
+            <select value={alertType} onChange={(e) => setAlertType(e.target.value)}>
+              <option value="All">All types</option>
+              {METRICS.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </div>
           <div style={{ maxHeight: 320, overflowY: "auto" }}>
-            {upcoming.length === 0 && <div style={{ padding: 18, color: C.dim, fontFamily: mono, fontSize: 12 }}>
-              No coverage breaches in the horizon.</div>}
-            {upcoming.map((a, i) => (
+            {filteredAlerts.length === 0 && <div style={{ padding: 18, color: C.dim, fontFamily: mono, fontSize: 12 }}>
+              No coverage breaches in that range.</div>}
+            {filteredAlerts.map((a, i) => (
               <div key={i} onClick={() => jumpTo(a.iso)} style={{ display: "flex", alignItems: "center", gap: 12,
                 padding: "8px 14px", borderBottom: `1px solid ${C.line}`, cursor: "pointer",
                 borderLeft: `3px solid ${a.sev === "critical" ? C.red : C.orange}` }}>
@@ -999,18 +1161,44 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
           </div>
         </Panel>
 
-        <Panel title="Roster checks" note="sequences that don't add up" pad={0}>
+        <Panel title="Roster checks"
+          note={`${upcomingAnomalies.length + openActions.length} open · click to go to the person and date`} pad={0}>
           <div style={{ maxHeight: 320, overflowY: "auto" }}>
-            {upcomingAnomalies.length === 0 && <div style={{ padding: 18, color: C.dim, fontFamily: mono, fontSize: 12 }}>
-              Nothing flagged. Every swing has travel in, work days, then travel out.</div>}
+            {upcomingAnomalies.length === 0 && openActions.length === 0 && (
+              <div style={{ padding: 18, color: C.dim, fontFamily: mono, fontSize: 12 }}>
+                Nothing flagged. Every swing has travel in, work days, then travel out.</div>
+            )}
+
             {upcomingAnomalies.map((a, i) => (
-              <div key={i} onClick={() => jumpTo(a.iso)} style={{ padding: "8px 14px",
-                borderBottom: `1px solid ${C.line}`, cursor: "pointer",
-                borderLeft: `3px solid ${a.sev === "critical" ? C.red : C.orange}` }}>
-                <div style={{ fontSize: 12.5, fontWeight: 500 }}>{a.name}</div>
-                <div style={{ fontSize: 12, color: C.dim, marginTop: 1 }}>{a.msg}</div>
+              <div key={"a" + i} style={{ padding: "8px 14px", borderBottom: `1px solid ${C.line}`,
+                borderLeft: `3px solid ${a.sev === "critical" ? C.red : C.orange}`,
+                display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <div style={{ flex: 1, cursor: "pointer" }} onClick={() => jumpTo(a.iso, a.empId)}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600 }}>{a.name}
+                    <span style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginLeft: 8 }}>
+                      {fmtShort(a.iso)}</span></div>
+                  <div style={{ fontSize: 12, color: C.dim, marginTop: 1 }}>{a.msg}</div>
+                </div>
+                <Btn small onClick={() => dismissAnomaly(a)}>Checked</Btn>
               </div>
             ))}
+
+            {openActions.map((a) => {
+              const emp = employees.find((e) => a.subject.includes(e.name));
+              return (
+                <div key={a.id} style={{ padding: "8px 14px", borderBottom: `1px solid ${C.line}`,
+                  borderLeft: `3px solid ${C.orange}`, display: "flex", gap: 10, alignItems: "flex-start" }}>
+                  <div style={{ flex: 1, cursor: emp ? "pointer" : "default" }}
+                    onClick={() => emp && jumpTo(focusDate, emp.id)}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>{a.subject}</div>
+                    <div style={{ fontSize: 12, color: C.dim, marginTop: 1 }}>
+                      {a.kind === "travel" ? "Travel action" : "Request"} · raised by {a.by}
+                    </div>
+                  </div>
+                  <Btn small onClick={() => markActionDone(a.id)}>Requested</Btn>
+                </div>
+              );
+            })}
           </div>
         </Panel>
       </div>
@@ -1023,7 +1211,7 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
    ============================================================ */
 
 function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, setGridDays, cellW,
-  setCellW, codeFor,
+  setCellW, codeFor, undo, undoStack,
   setCell, brush, setBrush, painting, setPainting, daily, dayIndex, thresholds, crews, cats,
   crewFilter, setCrewFilter, catFilter, setCatFilter, search, setSearch, picked, setPicked,
   focusDate, setFocusDate, overrides, menu, setMenu, anomalies }) {
@@ -1131,6 +1319,11 @@ function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, 
           <Chip code={brush === "__clear" ? "" : brush} />
           <span style={{ fontFamily: mono, fontSize: 10.5, color: C.red }}>drag across cells to paint</span>
         </>}
+        <div style={{ width: 1, height: 22, background: C.line }} />
+        <Btn small danger onClick={undo} disabled={!undoStack.length}>
+          {undoStack.length ? `Undo — ${undoStack[0].label}` : "Undo"}
+        </Btn>
+        <Btn small onClick={() => setBrush("__clear")}>Clear cells</Btn>
         <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontFamily: disp, fontSize: 11.5, letterSpacing: ".12em", color: C.dim }}>TRAVEL</span>
           {[["FIA", "to request"], ["FIA-TBC", "requested"], ["C-FIA", "confirmed"]].map(([c, l]) => (
@@ -1220,7 +1413,7 @@ function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, 
                     {emp.name}{emp.s26 && <span style={{ color: C.orange, fontSize: 10, marginLeft: 4 }}>§26</span>}
                   </div>
                   <div style={{ fontFamily: mono, fontSize: 9.5, color: C.dimmer, whiteSpace: "nowrap" }}>
-                    {emp.crew} · {seg ? seg.pattern : "—"} · {emp.defaultShift}
+                    {emp.crew} · {seg ? seg.pattern : "—"}
                     {emp.grader && " · GRD"}{emp.leadingHand && " · LH"}
                   </div>
                 </div>
@@ -1445,7 +1638,7 @@ function movementFrom(m) {
   return MOVEMENTS[mv] ? mv : dir === "I" ? "FIA" : "FOP";
 }
 
-function Travel({ employees, travel, setTravel, setCell, actions, user }) {
+function Travel({ employees, travel, setTravel, setCell, actions, user, applyTravelBatch, markActionDone }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -1505,13 +1698,14 @@ function Travel({ employees, travel, setTravel, setCell, actions, user }) {
   };
 
   const applyRows = () => {
-    rows.filter((r) => r.use && r.empId && r.date).forEach((r) => {
-      const emp = employees.find((e) => e.id === Number(r.empId));
-      const code = travelCode(r.movement, r.state);
-      setCell(Number(r.empId), r.date, code, `FMG travel${r.flight ? " " + r.flight : ""}`);
-      setTravel((t) => [...t, { id: Date.now() + Math.random(), empId: Number(r.empId),
-        name: emp ? emp.name : r.raw, date: r.date, code, flight: r.flight,
-        source: fileName || "pasted email", by: user || "unsigned" }]);
+    const chosen = rows.filter((r) => r.use && r.empId && r.date)
+      .map((r) => ({ ...r, empId: Number(r.empId) }));
+    applyTravelBatch(chosen);
+    chosen.forEach((r) => {
+      const emp = employees.find((e) => e.id === r.empId);
+      setTravel((t) => [...t, { id: Date.now() + Math.random(), empId: r.empId,
+        name: emp ? emp.name : r.raw, date: r.date, code: travelCode(r.movement, r.state),
+        flight: r.flight, source: fileName || "pasted email", by: user || "unsigned" }]);
     });
     setRows([]); setText(""); setPdf(null); setFileName("");
   };
@@ -1519,20 +1713,34 @@ function Travel({ employees, travel, setTravel, setCell, actions, user }) {
   const th = { textAlign: "left", padding: "6px 8px", fontFamily: disp, fontSize: 11.5,
     letterSpacing: ".1em", color: C.dim, textTransform: "uppercase", borderBottom: `1px solid ${C.line2}` };
   const td = { padding: "5px 8px", borderBottom: `1px solid ${C.line}`, fontSize: 12 };
-  const travelActions = actions.filter((a) => a.kind === "travel");
+  const travelActions = actions.filter((a) => a.kind === "travel")
+    .sort((a, b) => (a.done === b.done ? 0 : a.done ? 1 : -1));
 
   return (
     <div style={{ display: "grid", gap: 18 }}>
       {travelActions.length > 0 && (
-        <Panel title="Travel actions required" note="raised by leave entries" pad={0}>
-          {travelActions.slice(0, 12).map((a) => (
+        <Panel title="Travel actions required"
+          note={`${travelActions.filter((a) => !a.done).length} open · tick once requested with FMG`} pad={0}>
+          {travelActions.slice(0, 20).map((a) => (
             <div key={a.id} style={{ padding: "10px 16px", borderBottom: `1px solid ${C.line}`,
-              borderLeft: `3px solid ${C.orange}` }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>{a.subject}</div>
-              <pre style={{ margin: "5px 0 0", fontFamily: mono, fontSize: 11, color: C.dim,
-                whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{a.body}</pre>
+              borderLeft: `3px solid ${a.done ? C.ok : C.orange}`, opacity: a.done ? 0.6 : 1 }}>
+              <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{a.subject}</div>
+                  <pre style={{ margin: "5px 0 0", fontFamily: mono, fontSize: 11, color: C.dim,
+                    whiteSpace: "pre-wrap", lineHeight: 1.5 }}>{a.body}</pre>
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12,
+                  cursor: a.done ? "default" : "pointer", whiteSpace: "nowrap" }}>
+                  <input type="checkbox" checked={!!a.done} disabled={!!a.done}
+                    onChange={() => markActionDone(a.id)}
+                    style={{ width: 15, height: 15, accentColor: C.red }} />
+                  Requested in FMG workflow
+                </label>
+              </div>
               <div style={{ fontFamily: mono, fontSize: 10, color: C.dimmer, marginTop: 5 }}>
                 {fmtStamp(a.at)} · {a.by} · {a.emailed ? "emailed" : "not emailed — email not configured"}
+                {a.done && ` · marked requested ${fmtStamp(a.doneAt)} by ${a.doneBy}`}
               </div>
             </div>
           ))}
@@ -1872,7 +2080,7 @@ function StripCells({ cells }) {
    ============================================================ */
 
 function People({ employees, updateEmployee, changePattern, removePatternSegment, thresholds,
-  setThresholds, focusDate }) {
+  setThresholds, focusDate, addPerson }) {
   const [pEmp, setPEmp] = useState(employees[6] ? employees[6].id : 1);
   const [pPattern, setPPattern] = useState("2:1");
   const [pFrom, setPFrom] = useState(focusDate);
@@ -1951,13 +2159,15 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
         </Panel>
       </div>
 
+      <AddPerson employees={employees} addPerson={addPerson} focusDate={focusDate} />
+
       <Panel title="Personnel" note="mobilisation and demobilisation dates drive the roster" pad={0}>
         <div style={{ overflowX: "auto" }}>
           <table style={{ minWidth: 1080 }}>
             <thead><tr>
               <th style={th}>Name</th><th style={th}>Position</th><th style={th}>Crew</th>
               <th style={th}>Pattern now</th><th style={th}>Mobe</th><th style={th}>Demobe</th>
-              <th style={th}>Default shift</th><th style={th}>§26</th><th style={th}>LH</th><th style={th}>Grader</th>
+              <th style={th}>§26</th><th style={th}>LH</th><th style={th}>Grader</th>
             </tr></thead>
             <tbody>
               {employees.map((e) => {
@@ -1975,12 +2185,6 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
                       onChange={(ev) => updateEmployee(e.id, { mobeDate: ev.target.value })} /></td>
                     <td style={td}><input type="date" value={e.demobDate || ""}
                       onChange={(ev) => updateEmployee(e.id, { demobDate: ev.target.value })} /></td>
-                    <td style={td}>
-                      <select value={e.defaultShift}
-                        onChange={(ev) => updateEmployee(e.id, { defaultShift: ev.target.value })}>
-                        <option value="DS">Day</option><option value="NS">Night</option>
-                      </select>
-                    </td>
                     {["s26", "leadingHand", "grader"].map((k) => (
                       <td key={k} style={{ ...td, textAlign: "center" }}>
                         <input type="checkbox" checked={!!e[k]}
@@ -1999,6 +2203,90 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
   );
 }
 
+function AddPerson({ employees, addPerson, focusDate }) {
+  const [open, setOpen] = useState(false);
+  const [f, setF] = useState({
+    name: "", alias: "", category: "Operator", position: "", poh: "Perth",
+    crew: "A", pattern: "2:2", anchor: focusDate, mobeDate: focusDate,
+  });
+  const [err, setErr] = useState("");
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+
+  const crews = Array.from(new Set(employees.map((e) => e.crew)));
+  const cats = Array.from(new Set(employees.map((e) => e.category)));
+
+  const submit = () => {
+    if (!f.name.trim()) { setErr("Enter a name."); return; }
+    if (!f.position.trim()) { setErr("Enter a position — grader and leading hand are picked up from it."); return; }
+    setErr("");
+    addPerson(f);
+    setF({ ...f, name: "", alias: "", position: "" });
+    setOpen(false);
+  };
+
+  if (!open) {
+    return (
+      <div>
+        <Btn primary onClick={() => setOpen(true)}>Add a person</Btn>
+      </div>
+    );
+  }
+
+  return (
+    <Panel title="Add a person" note="they appear on the roster from their mobilisation date">
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
+        <Field label="Name — SURNAME, First">
+          <input value={f.name} onChange={(e) => set("name", e.target.value)}
+            placeholder="SMITH, John" style={{ width: "100%" }} />
+        </Field>
+        <Field label="Known as">
+          <input value={f.alias} onChange={(e) => set("alias", e.target.value)}
+            placeholder="optional" style={{ width: "100%" }} />
+        </Field>
+        <Field label="Category">
+          <select value={f.category} onChange={(e) => set("category", e.target.value)} style={{ width: "100%" }}>
+            {cats.map((c) => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label="Position">
+          <input value={f.position} onChange={(e) => set("position", e.target.value)}
+            placeholder="HR WC / Roller / Grader" style={{ width: "100%" }} />
+        </Field>
+        <Field label="Point of hire">
+          <input value={f.poh} onChange={(e) => set("poh", e.target.value)} style={{ width: "100%" }} />
+        </Field>
+        <Field label="Crew">
+          <select value={f.crew} onChange={(e) => set("crew", e.target.value)} style={{ width: "100%" }}>
+            {crews.map((c) => <option key={c}>{c}</option>)}
+          </select>
+        </Field>
+        <Field label="Roster pattern">
+          <select value={f.pattern} onChange={(e) => set("pattern", e.target.value)} style={{ width: "100%" }}>
+            {Object.keys(PATTERNS).map((x) => <option key={x} value={x}>{x} · {PATTERNS[x].label}</option>)}
+          </select>
+        </Field>
+        <Field label="Mobilisation date">
+          <input type="date" value={f.mobeDate}
+            onChange={(e) => { set("mobeDate", e.target.value); set("anchor", e.target.value); }}
+            style={{ width: "100%" }} />
+        </Field>
+        <Field label="First swing starts">
+          <input type="date" value={f.anchor} onChange={(e) => set("anchor", e.target.value)} style={{ width: "100%" }} />
+        </Field>
+      </div>
+      {err && <div style={{ color: C.red, fontFamily: mono, fontSize: 11.5, marginBottom: 8 }}>{err}</div>}
+      <div style={{ display: "flex", gap: 10 }}>
+        <Btn primary onClick={submit}>Add to the roster</Btn>
+        <Btn onClick={() => { setOpen(false); setErr(""); }}>Cancel</Btn>
+      </div>
+      <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 12, lineHeight: 1.55 }}>
+        Grader and leading hand are read from the position text. Section 26 is set automatically for
+        supervisors and project managers. All three can be changed in the table below.
+      </div>
+    </Panel>
+  );
+}
+
 /* ============================================================
    CHANGE LOG
    ============================================================ */
@@ -2009,7 +2297,7 @@ function Audit({ log }) {
   const [csv, setCsv] = useState("");
 
   const people = ["All", ...Array.from(new Set(log.map((l) => l.name)))];
-  const kinds = ["All", "cell", "leave", "person", "pattern", "request"];
+  const kinds = ["All", "cell", "leave", "person", "pattern", "request", "check"];
   const filtered = log.filter((l) => (who === "All" || l.name === who) && (kind === "All" || l.kind === kind));
 
   const makeCsv = () => {
