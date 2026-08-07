@@ -177,6 +177,9 @@ const patternNames = () => Object.keys(PATTERN_REGISTRY);
 
 /* ---------- SEED WORKFORCE ---------- */
 
+const CATEGORIES = ["Operator", "Leading Hand", "Supervisor", "Project Manager",
+  "HSE Advisor", "Administrator", "General Manager", "Trainer", "Maintenance", "Other"];
+
 const USERS = ["Jaki Soutar", "Kiteesha", "Kylie Turner", "Wes Clack", "Greg Jozwicki", "Donna Matiu", "Allan Butson"];
 const ADMINS = ["Jaki Soutar", "Kiteesha", "Kylie Turner"];
 
@@ -834,6 +837,17 @@ export default function App() {
   const updateEmployee = (id, patch) => {
     if (!requireUser()) return;
     const emp = employees.find((e) => e.id === id);
+    /* the grader and leading hand flags are read off the position text, so keep
+       them in step when the position changes — they stay editable by hand */
+    if (patch.position != null && emp) {
+      const pos = patch.position.toLowerCase();
+      patch = { ...patch, grader: pos.includes("grader"),
+        leadingHand: pos.includes("leading hand") };
+    }
+    if (patch.category != null && emp) {
+      patch = { ...patch,
+        s26: patch.category === "Supervisor" || patch.category === "Project Manager" || !!emp.s26 };
+    }
     setEmployees((es) => es.map((e) => (e.id === id ? { ...e, ...patch } : e)));
     Object.keys(patch).forEach((k) => {
       if (k === "patterns") return;
@@ -2417,7 +2431,7 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
           ])}>Export register to Excel</Btn>
         </div>
         <div style={{ overflowX: "auto" }}>
-          <table style={{ minWidth: 1720 }}>
+          <table style={{ minWidth: 1980 }}>
             <thead><tr>
               <th style={th}>Name</th><th style={th}>Position</th><th style={th}>Category</th>
               <th style={th}>Crew</th><th style={th}>Pattern now</th>
@@ -2432,10 +2446,18 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
                 const seg = segmentFor(e, focusDate);
                 return (
                   <tr key={e.id} style={{ opacity: e.demobDate ? 0.55 : 1 }}>
-                    <td style={{ ...td, fontWeight: 500, whiteSpace: "nowrap" }}>{e.name}</td>
-                    <td style={{ ...td, color: C.dim, fontSize: 11.5 }}>{e.position}</td>
-                    <td style={{ ...td, fontSize: 11.5 }}>{e.category}</td>
-                    <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{e.crew}</td>
+                    <td style={td}><input value={e.name} style={{ width: 180, fontWeight: 600 }}
+                      onChange={(ev) => updateEmployee(e.id, { name: ev.target.value })} /></td>
+                    <td style={td}><input value={e.position || ""} style={{ width: 230 }}
+                      onChange={(ev) => updateEmployee(e.id, { position: ev.target.value })} /></td>
+                    <td style={td}>
+                      <select value={e.category}
+                        onChange={(ev) => updateEmployee(e.id, { category: ev.target.value })}>
+                        {CATEGORIES.map((x) => <option key={x} value={x}>{x}</option>)}
+                      </select>
+                    </td>
+                    <td style={td}><input value={e.crew || ""} style={{ width: 62 }}
+                      onChange={(ev) => updateEmployee(e.id, { crew: ev.target.value })} /></td>
                     <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>
                       {seg ? seg.pattern : "—"}
                       <span style={{ color: C.dimmer }}> · {seg ? fmtShort(seg.anchor) : ""}</span>
@@ -2611,7 +2633,7 @@ function AddPerson({ employees, addPerson, focusDate }) {
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
 
   const crews = Array.from(new Set(employees.map((e) => e.crew)));
-  const cats = Array.from(new Set(employees.map((e) => e.category)));
+  const cats = Array.from(new Set([...CATEGORIES, ...employees.map((e) => e.category)]));
 
   const submit = () => {
     if (!f.name.trim()) { setErr("Enter a name."); return; }
@@ -2716,13 +2738,15 @@ function AddPerson({ employees, addPerson, focusDate }) {
    MANNING HISTOGRAM — the monthly report to FMG
    ============================================================ */
 
+/* inTotal: false means the row is a subset of another row and must not be
+   added again — leading hands are already counted among the operators. */
 const HISTO_ROWS = [
-  { label: "No Of Operators on Day Shift", cat: "Operator", key: "opsDay" },
-  { label: "No of Operators on Night Shift", cat: "Operator", key: "opsNight" },
-  { label: "No of Leading Hands on Site", cat: "Leading Hand", key: "lead" },
-  { label: "No of Supervisors on Site", cat: "Supervisor", key: "sup" },
-  { label: "Project Manager on Site", cat: "Project Manager", key: "pm" },
-  { label: "HSE On Site", cat: "HSE Advisor", key: "hse" },
+  { label: "No Of Operators on Day Shift", cat: "Operator", key: "opsDay", inTotal: true },
+  { label: "No of Operators on Night Shift", cat: "Operator", key: "opsNight", inTotal: true },
+  { label: "No of Supervisors on Site", cat: "Supervisor", key: "sup", inTotal: true },
+  { label: "Project Manager on Site", cat: "Project Manager", key: "pm", inTotal: true },
+  { label: "HSE On Site", cat: "HSE Advisor", key: "hse", inTotal: true },
+  { label: "   of which Leading Hands", cat: "Leading Hand", key: "lead", inTotal: false },
 ];
 
 function Histogram({ daily, dayIndex, focusDate, thresholds }) {
@@ -2741,7 +2765,8 @@ function Histogram({ daily, dayIndex, focusDate, thresholds }) {
   }, [from, to, daily, dayIndex]);
 
   const val = (row, key) => (key === "opsDay" ? row.opsDay : key === "opsNight" ? row.opsNight : row.counts[key]);
-  const totals = days.map((d) => HISTO_ROWS.reduce((n, r) => n + val(d, r.key), 0));
+  const totals = days.map((d) =>
+    HISTO_ROWS.reduce((n, r) => n + (r.inTotal ? val(d, r.key) : 0), 0));
   const ratios = days.map((d) => (d.opsDay + d.opsNight) / (target || 8));
   const avg = ratios.length ? ratios.reduce((a, b) => a + b, 0) / ratios.length : 0;
   const maxTotal = Math.max(1, ...totals);
@@ -2784,7 +2809,11 @@ function Histogram({ daily, dayIndex, focusDate, thresholds }) {
           <div style={{ flex: 1 }} />
           <Btn primary onClick={exportCsv} disabled={!days.length}>Export to Excel</Btn>
         </div>
-        <div style={{ fontFamily: mono, fontSize: 11, color: C.dim, marginTop: 10 }}>
+        <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 10, lineHeight: 1.6 }}>
+          Leading hands are counted inside the operator rows, so that line is shown for information
+          only and is not added into the total.
+        </div>
+        <div style={{ fontFamily: mono, fontSize: 11, color: C.dim, marginTop: 6 }}>
           {days.length} days · average operator manning{" "}
           <span style={{ color: avg >= 1 ? C.ok : C.red, fontWeight: 600 }}>{avg.toFixed(3)}</span>
           {" "}against a target of {target}
@@ -2805,9 +2834,12 @@ function Histogram({ daily, dayIndex, focusDate, thresholds }) {
             <tbody>
               {HISTO_ROWS.map((r) => (
                 <tr key={r.label}>
-                  <td style={{ ...td, textAlign: "left", fontFamily: sans, fontSize: 12 }}>{r.label}</td>
+                  <td style={{ ...td, textAlign: "left", fontFamily: sans, fontSize: 12,
+                    color: r.inTotal ? C.ink : C.dim,
+                    fontStyle: r.inTotal ? "normal" : "italic" }}>{r.label.trim()}</td>
                   <td style={{ ...td, textAlign: "left", color: C.dim }}>{r.cat}</td>
-                  {days.map((d) => <td key={d.iso} style={td}>{val(d, r.key)}</td>)}
+                  {days.map((d) => <td key={d.iso} style={{ ...td,
+                    color: r.inTotal ? C.ink : C.dim }}>{val(d, r.key)}</td>)}
                 </tr>
               ))}
               <tr style={{ background: C.panel2 }}>
@@ -2834,7 +2866,7 @@ function Histogram({ daily, dayIndex, focusDate, thresholds }) {
                 justifyContent: "flex-end", height: "100%" }}>
               <div style={{ height: `${(d.opsNight / maxTotal) * 100}%`, background: "#2E3F66" }} />
               <div style={{ height: `${(d.opsDay / maxTotal) * 100}%`, background: C.orange }} />
-              <div style={{ height: `${((totals[i] - d.opsDay - d.opsNight) / maxTotal) * 100}%`,
+              <div style={{ height: `${(Math.max(0, totals[i] - d.opsDay - d.opsNight) / maxTotal) * 100}%`,
                 background: "#C8B8AE" }} />
               <div style={{ fontFamily: mono, fontSize: 7, color: C.dimmer, textAlign: "center", height: 10 }}>
                 {parse(d.iso).getUTCDate()}</div>
