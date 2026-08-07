@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { loadRoster, saveRoster, STORAGE_MODE } from "./storage.js";
 import { PEOPLE, OVERRIDES, NOSHOWS } from "./seed.js";
+import Help from "./help.jsx";
 import LOGO from "./logo.js";
 
 /* ============================================================
@@ -1059,7 +1060,7 @@ export default function App() {
 
   const tabs = [["dash","Dashboard"],["grid","Roster"],["leave","Leave"],["travel","Travel"],
     ["requests", pendingRequests ? `Requests (${pendingRequests})` : "Requests"],
-    ["people","People"],["histogram","Histogram"],["noshow","No shows"],["audit","Change log"]];
+    ["people","People"],["histogram","Histogram"],["noshow","No shows"],["audit","Change log"],["help","Guide"]];
 
   return (
     <div style={{ background: C.page, color: C.ink, fontFamily: sans, minHeight: "100vh" }}
@@ -1151,6 +1152,7 @@ export default function App() {
         {view === "histogram" && <Histogram {...{ daily, dayIndex, focusDate, thresholds }} />}
         {view === "noshow" && <NoShow {...{ employees, noShows, addNoShow, removeNoShow }} />}
         {view === "audit" && <Audit {...{ log }} />}
+        {view === "help" && <Help />}
       </div>
 
       {blocked && (
