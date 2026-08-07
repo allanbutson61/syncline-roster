@@ -47,6 +47,7 @@ const MOVEMENTS = {
   DIP: { label: "Drive in PM",  dir: "IN",  onsite: false },
   DOA: { label: "Drive out AM", dir: "OUT", onsite: false },
   DOP: { label: "Drive out PM", dir: "OUT", onsite: true  },
+  DT:  { label: "Day trip — in and out same day", dir: "DAY", onsite: true },
 };
 
 const TRAVEL_STATES = {
@@ -322,6 +323,13 @@ function checkEmployee(emp, codeFor, dates) {
   seq.forEach(({ iso, code }, i) => {
     const dir = dirOf(code);
     const work = isWorkDay(code);
+
+    /* a day trip starts and finishes on the same day — it neither opens
+       nor closes a swing, and it needs no work days either side */
+    if (dir === "DAY") {
+      if (openIn) flag(iso, `Day trip on ${fmtShort(iso)} but already on site since ${fmtShort(openIn)}.`, "warning");
+      return;
+    }
 
     if (dir === "IN") {
       if (openIn) flag(iso, `Travels in ${fmtShort(iso)} but is already on site since ${fmtShort(openIn)} — a departure is needed first.`, "critical");
@@ -1564,7 +1572,7 @@ function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, 
             color: C.dim, background: C.panel2, borderTop: `1px solid ${C.line}` }}>
             TRAVEL — to request / TBC / confirmed
           </div>
-          {["FIA", "FIP", "FOA", "FOP"].map((mv) => (
+          {["FIA", "FIP", "FOA", "FOP", "DT"].map((mv) => (
             <div key={mv} style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${C.line}` }}>
               <div style={{ width: 42, padding: "6px 8px", fontFamily: mono, fontSize: 11, color: C.dim }}>{mv}</div>
               {["toRequest", "requested", "confirmed"].map((st) => {
@@ -1769,12 +1777,29 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
       if (!Array.isArray(parsed) || parsed.length === 0) {
         setErr("No travel movements found in that message."); setBusy(false); return;
       }
-      setRows(parsed.map((m, i) => {
+      let mapped = parsed.map((m, i) => {
         const emp = matchEmployee(m.name, employees);
         return { key: i, raw: m.name, empId: emp ? emp.id : "", date: m.date || "",
           movement: movementFrom(m), state: m.confirmed === false ? "requested" : "confirmed",
           flight: m.flight || "", use: !!emp };
-      }));
+      });
+
+      /* someone flying in and back out on the same day is a day trip */
+      const collapsed = [];
+      mapped.forEach((r) => {
+        const twin = collapsed.find((x) => x.empId && x.empId === r.empId && x.date === r.date
+          && MOVEMENTS[x.movement] && MOVEMENTS[r.movement]
+          && MOVEMENTS[x.movement].dir !== MOVEMENTS[r.movement].dir
+          && MOVEMENTS[x.movement].dir !== "DAY");
+        if (twin) {
+          twin.movement = "DT";
+          twin.flight = [twin.flight, r.flight].filter(Boolean).join(" / ");
+          if (r.state === "requested") twin.state = "requested";
+          return;
+        }
+        collapsed.push(r);
+      });
+      setRows(collapsed);
     } catch {
       setErr("Could not reach the travel reader. Check the site is online, or use manual entry.");
     }
@@ -2570,4 +2595,5 @@ function Audit({ log }) {
     </div>
   );
 }
+
 
