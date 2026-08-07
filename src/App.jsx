@@ -1,8 +1,7 @@
-
-
-
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { loadRoster, saveRoster, STORAGE_MODE } from "./storage.js";
+import { PEOPLE, OVERRIDES, NOSHOWS } from "./seed.js";
+import Help from "./help.jsx";
 import LOGO from "./logo.js";
 
 /* ============================================================
@@ -178,44 +177,11 @@ const patternNames = () => Object.keys(PATTERN_REGISTRY);
 
 /* ---------- SEED WORKFORCE ---------- */
 
-const SW_A = "2026-06-24";
-const SW_B = "2026-07-08";
-
-const RAW = [
-  ["BUTSON, Allan","","General Manager","General Manager","Geraldton","Staff","5:2",0,"2026-07-01","2023-09-21"],
-  ["SOUTAR, Jacqueline","Jaki","Administrator","Administrator","Geraldton","Staff","5:2",0,"2026-07-01","2024-08-26"],
-  ["CLACK, Wesley","Wes","Project Manager","Project Manager","Perth","Staff","4:3",0,"2026-07-01","2026-01-06"],
-  ["JOZWICKI, Gregory","Greg","Supervisor","Supervisor","Perth","Staff B","8:6",0,"2026-06-29","2025-12-17"],
-  ["FIELD, Scott","Scottie","Supervisor","Supervisor","Perth","Staff","8:6",0,"2026-07-08","2026-01-21"],
-  ["MATIU, Donna","","HSE Advisor","HSE Advisor","Perth","Staff","8:6",0,"2026-07-02","2024-07-24"],
-  ["TUXWORTH, James","","Operator","All Rounder Intermediate","Perth","A","2:2",0,SW_A,"2026-02-18"],
-  ["WILLIAMS, Jarrod","Jay Jay","Operator","Grader operations","Busselton","A","2:2",0,SW_B,"2026-02-24"],
-  ["JACKSON, David","Jacko","Operator","Grader Operations","Busselton","A","2:2",0,SW_A,"2024-06-05"],
-  ["BUTSON, Jett","","Operator","Grader operations","Perth","A","2:2",0,SW_B,"2024-01-10"],
-  ["VO, Tran","","Operator","Junior - HR WC / Roller / Loader / Grader","Perth","A","2:2",0,SW_A,"2024-07-18"],
-  ["ZOSEL, Edward","Eddie","Operator","Operator / Grader / Leading Hand","Perth","A","2:2",1,SW_B,"2024-10-02"],
-  ["ROBERTS, Simone","","Operator","All Rounder / Watercart / Loader / Roller","Perth","A","2:2",1,SW_A,"2026-06-10"],
-  ["PASSMORE, Gavin","","Operator","Junior - HR WC / Roller / Grader","Perth","A","2:2",1,SW_B,"2026-02-04"],
-  ["JOZWICKI, Renee","","Operator","WC / Moxy / Roller","Perth","A","2:2",0,SW_A,"2026-03-04"],
-  ["RADONICH, Colin","","Operator","All Rounder - Experienced","Perth","A","2:2",1,SW_B,"2026-07-14"],
-  ["LACROIX, Carla","","Operator","HR WC / Roller / Loader / Grader","Perth","B","2:2",1,SW_A,"2024-07-24"],
-  ["PARRY, Jordan","","Operator","HR WC / Roller / Grader","Busselton","B","2:2",1,SW_B,"2025-11-12"],
-  ["COBBY, Layne","","Operator","Junior - HR WC / Roller","Perth","B","2:2",0,SW_A,"2025-04-30"],
-  ["WOODLEY, Justin","","Operator","All Rounder / Grader","Perth","B","2:2",0,SW_B,"2025-11-12"],
-  ["RIVE, Michael","Chucky","Operator","All Rounder / Watercart / Loader / Roller","Perth","B","2:2",0,SW_A,"2026-02-04"],
-  ["SHEHADE, Victor","Vic","Operator","Operator - Leading Hand / Grader","Perth","A+B","2:1",1,"2026-07-01","2024-11-25"],
-  ["VERVERIS, Alexandrou","Alex","Operator","WC / Loader / Grader","Perth","A+B","2:1",1,"2026-07-08","2026-03-03"],
-  ["HARKIN, Dara","","Operator","Allrounder","Perth","A+B","2:1",1,"2026-07-15","2026-07-15"],
-  ["CAIRD, Sarah","","Operator","WC / Roller / Exc / Posi / Tipper","Perth","C","2:2",1,SW_B,"2026-03-04"],
-  ["FOGARTY, Troy","","Operator","Excavator / Posi / Loader / Grader / WC","Perth","C","2:2",0,SW_A,"2026-03-10"],
-  ["SLOAN, David","Davo","Operator","All Rounder / Grader Experience","Perth","C","2:2",1,SW_B,"2026-03-10"],
-];
-
 const USERS = ["Jaki Soutar", "Kiteesha", "Kylie Turner", "Wes Clack", "Greg Jozwicki", "Donna Matiu", "Allan Butson"];
 const ADMINS = ["Jaki Soutar", "Kiteesha", "Kylie Turner"];
 
 const HORIZON_START = "2026-07-01";
-const HORIZON_DAYS = 180;
+const HORIZON_DAYS = 400;
 
 /* ---------- DATES ---------- */
 
@@ -372,6 +338,19 @@ function checkEmployee(emp, codeFor, dates) {
 
 /* ---------- UI ATOMS ---------- */
 
+const csvCell = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+
+function downloadCsv(filename, rows) {
+  const text = rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
+  const blob = new Blob(["\ufeff" + text], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
 function Btn({ children, onClick, active, danger, small, disabled, primary }) {
   const filled = active || primary;
   return (
@@ -455,20 +434,33 @@ function Stat({ label, n, bad }) {
 
 export default function App() {
   const buildEmployees = () =>
-    RAW.map((r, i) => {
-      const pos = r[3].toLowerCase();
+    PEOPLE.map((r, i) => {
+      const pos = (r.position || "").toLowerCase();
       return {
-        id: i + 1, name: r[0], alias: r[1], category: r[2], position: r[3],
-        poh: r[4], crew: r[5],
-        patterns: [{ from: "2000-01-01", pattern: r[6], anchor: r[8] }],
-        mobeDate: r[9], demobDate: "",
+        id: i + 1, name: r.name, alias: r.alias, sap: r.sap,
+        category: r.category, position: r.position,
+        poh: r.poh, company: r.company, crew: r.crew,
+        phone: r.phone, email: r.email, atsi: r.atsi, gender: r.gender,
+        contract: r.contract,
+        patterns: [{ from: "2000-01-01", pattern: r.pattern, anchor: r.anchor }],
+        mobeDate: r.mobeDate, demobDate: r.demobDate,
         grader: pos.includes("grader"), leadingHand: pos.includes("leading hand"),
-        s26: r[2] === "Supervisor" || r[2] === "Project Manager",
+        s26: r.category === "Supervisor" || r.category === "Project Manager",
       };
     });
 
+  const buildOverrides = () => {
+    const o = {};
+    PEOPLE.forEach((r, i) => {
+      const days = OVERRIDES[r.name];
+      if (!days) return;
+      Object.keys(days).forEach((d) => (o[(i + 1) + "|" + d] = days[d]));
+    });
+    return o;
+  };
+
   const [employees, setEmployees] = useState(buildEmployees);
-  const [overrides, setOverrides] = useState({});
+  const [overrides, setOverrides] = useState(buildOverrides);
   const [leaveRecords, setLeaveRecords] = useState([]);
   const [travel, setTravel] = useState([]);
   const [requests, setRequests] = useState([]);
@@ -491,16 +483,18 @@ export default function App() {
   const [picked, setPicked] = useState([]);
   const [sync, setSync] = useState({ state: "idle", at: null, by: null });
   const [confirm, setConfirm] = useState(null);
+  const [blocked, setBlocked] = useState(false);
   const [dismissed, setDismissed] = useState({});
   const [undoStack, setUndoStack] = useState([]);
   const [customPatterns, setCustomPatterns_] = useState({});
+  const [noShows, setNoShows] = useState(() => NOSHOWS.slice());
 
   const hydrated = useRef(false);
   const saveTimer = useRef(null);
 
   const snapshot = () => ({
     employees, overrides, leaveRecords, travel, requests, actions, log, thresholds, dismissed,
-    customPatterns,
+    customPatterns, noShows,
     savedAt: nowStamp(), savedBy: user || "unknown",
   });
 
@@ -519,6 +513,7 @@ export default function App() {
         if (d.thresholds) setThresholds(d.thresholds);
         if (d.dismissed) setDismissed(d.dismissed);
         if (d.customPatterns) setCustomPatterns_(d.customPatterns);
+        if (d.noShows) setNoShows(d.noShows);
         setSync({ state: "ok", at: d.savedAt, by: d.savedBy });
       } else setSync({ state: "empty", at: null, by: null });
     } catch {
@@ -545,7 +540,17 @@ export default function App() {
     }, 900);
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds, dismissed, customPatterns]);
+  }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds, dismissed, customPatterns, noShows]);
+
+  const userRef = useRef(user);
+  useEffect(() => { userRef.current = user; }, [user]);
+
+  /* Every change is attributed, so nothing is written until a name is picked. */
+  const requireUser = useCallback(() => {
+    if (userRef.current) return true;
+    setBlocked(true);
+    return false;
+  }, []);
 
   const record = useCallback((entry) => {
     setLog((l) => [{ ...entry, at: nowStamp(), by: user || "unsigned" }, ...l].slice(0, 800));
@@ -580,6 +585,7 @@ export default function App() {
   useEffect(() => { overridesRef.current = overrides; }, [overrides]);
 
   const undo = () => {
+    if (!requireUser()) return;
     setUndoStack((u) => {
       if (!u.length) return u;
       setOverrides(u[0].overrides);
@@ -590,6 +596,7 @@ export default function App() {
   };
 
   const applyCell = useCallback((empId, iso, code, why) => {
+    if (!requireUser()) return;
     const emp = employees.find((e) => e.id === empId);
     if (!emp) return;
     const before = codeForRef.current(emp, iso);
@@ -605,7 +612,7 @@ export default function App() {
     });
     record({ kind: "cell", empId, name: emp.name, date: iso,
       from: before || "—", to: after || "—", why: why || "manual edit" });
-  }, [employees, record]);
+  }, [employees, record, requireUser]);
 
   /* Checks a proposed change before it is written, and returns any
      new problems it would create near that date. */
@@ -692,6 +699,7 @@ export default function App() {
   }, [employees, codeFor, dismissed]);
 
   const dismissAnomaly = (a) => {
+    if (!requireUser()) return;
     setDismissed((d) => ({ ...d, [a.empId + "|" + a.iso + "|" + a.msg]:
       { by: user || "unsigned", at: nowStamp() } }));
     record({ kind: "check", empId: a.empId, name: a.name, date: a.iso,
@@ -740,6 +748,7 @@ export default function App() {
     leaveRecords.find((r) => r.empId === rec.empId && r.from <= rec.to && r.to >= rec.from);
 
   const addLeave = (rec) => {
+    if (!requireUser()) return { error: "Select your name at the top before making changes." };
     const clash = leaveClash(rec);
     if (clash) return { error:
       `${employees.find((e) => e.id === rec.empId) ? employees.find((e) => e.id === rec.empId).name : "That person"} ` +
@@ -808,6 +817,7 @@ export default function App() {
   };
 
   const removeLeave = (id) => {
+    if (!requireUser()) return;
     const rec = leaveRecords.find((r) => r.id === id);
     if (!rec) return;
     const emp = employees.find((e) => e.id === rec.empId);
@@ -822,6 +832,7 @@ export default function App() {
   };
 
   const updateEmployee = (id, patch) => {
+    if (!requireUser()) return;
     const emp = employees.find((e) => e.id === id);
     setEmployees((es) => es.map((e) => (e.id === id ? { ...e, ...patch } : e)));
     Object.keys(patch).forEach((k) => {
@@ -887,6 +898,7 @@ export default function App() {
   };
 
   const savePattern = (name, seq) => {
+    if (!requireUser()) return;
     setCustomPatterns_((c) => ({ ...c, [name]: { seq, label: describeSeq(seq) } }));
     record({ kind: "pattern", empId: 0, name: "—", date: "—",
       from: customPatterns[name] ? "edited" : "new pattern", to: name, why: describeSeq(seq) });
@@ -900,12 +912,44 @@ export default function App() {
     return { error: null };
   };
 
+  const loadImported = () => {
+    if (!requireUser()) return;
+    setEmployees(buildEmployees());
+    setOverrides(buildOverrides());
+    setNoShows(NOSHOWS.slice());
+    setLeaveRecords([]); setTravel([]); setRequests([]); setActions([]);
+    setDismissed({}); setUndoStack([]);
+    record({ kind: "person", empId: 0, name: "—", date: "—", from: "saved roster",
+      to: "imported roster", why: "reloaded from the Excel workbook" });
+  };
+
+  const addNoShow = (rec) => {
+    if (!requireUser()) return;
+    const emp = employees.find((e) => e.id === Number(rec.empId));
+    const full = { ...rec, id: "N" + Date.now(), name: emp ? emp.name : rec.name,
+      by: user || "unsigned", at: nowStamp() };
+    setNoShows((n) => [full, ...n]);
+    /* a no show is a fact about the roster, so mark the day */
+    applyCell(Number(rec.empId), rec.date, "Nshow", `no show — ${rec.reason || "no reason given"}`);
+    record({ kind: "noshow", empId: Number(rec.empId), name: full.name, date: rec.date,
+      from: rec.flight || "flight", to: rec.rebookedDate ? `rebooked ${rec.rebookedDate}` : "not rebooked",
+      why: rec.reason || "no show" });
+  };
+
+  const removeNoShow = (id) => {
+    if (!requireUser()) return;
+    setNoShows((n) => n.filter((x) => x.id !== id));
+  };
+
   const addPerson = (p) => {
+    if (!requireUser()) return;
     const id = Math.max(0, ...employees.map((e) => e.id)) + 1;
     const pos = (p.position || "").toLowerCase();
     const person = {
-      id, name: p.name, alias: p.alias || "", category: p.category,
+      id, name: p.name, alias: p.alias || "", sap: p.sap || "", category: p.category,
       position: p.position, poh: p.poh || "", crew: p.crew || "A",
+      company: p.company || "", contract: p.contract || "", gender: p.gender || "",
+      atsi: p.atsi || "", email: p.email || "", phone: p.phone || "",
       patterns: [{ from: "2000-01-01", pattern: p.pattern, anchor: p.anchor }],
       mobeDate: p.mobeDate || "", demobDate: "",
       grader: pos.includes("grader"), leadingHand: pos.includes("leading hand"),
@@ -917,6 +961,7 @@ export default function App() {
   };
 
   const changePattern = (empId, from, pattern, anchor) => {
+    if (!requireUser()) return;
     const emp = employees.find((e) => e.id === empId);
     if (!emp) return;
     const prev = segmentFor(emp, addDays(from, -1));
@@ -955,6 +1000,7 @@ export default function App() {
   };
 
   const submitRequest = (req) => {
+    if (!requireUser()) return;
     const emp = employees.find((e) => e.id === req.empId);
     const before = {};
     rangeDays(addDays(req.changes[0].date, -8), addDays(req.changes[req.changes.length - 1].date, 8))
@@ -976,6 +1022,7 @@ export default function App() {
   };
 
   const markRequested = (reqId) => {
+    if (!requireUser()) return;
     const req = requests.find((r) => r.id === reqId);
     if (!req) return;
     req.changes.forEach((c) => {
@@ -987,6 +1034,7 @@ export default function App() {
   };
 
   const markActionDone = (id) => {
+    if (!requireUser()) return;
     setActions((as) => as.map((a) => a.id === id
       ? { ...a, done: true, doneBy: user || "unsigned", doneAt: nowStamp() } : a));
   };
@@ -1012,7 +1060,7 @@ export default function App() {
 
   const tabs = [["dash","Dashboard"],["grid","Roster"],["leave","Leave"],["travel","Travel"],
     ["requests", pendingRequests ? `Requests (${pendingRequests})` : "Requests"],
-    ["people","People"],["audit","Change log"]];
+    ["people","People"],["histogram","Histogram"],["noshow","No shows"],["audit","Change log"],["help","Guide"]];
 
   return (
     <div style={{ background: C.page, color: C.ink, fontFamily: sans, minHeight: "100vh" }}
@@ -1100,9 +1148,40 @@ export default function App() {
           declineRequest, codeFor, focusDate, problemsFromChanges }} />}
         {view === "people" && <People {...{ employees, updateEmployee, changePattern,
           removePatternSegment, thresholds, setThresholds, focusDate, addPerson,
-          customPatterns, savePattern, deletePattern }} />}
+          customPatterns, savePattern, deletePattern, loadImported }} />}
+        {view === "histogram" && <Histogram {...{ daily, dayIndex, focusDate, thresholds }} />}
+        {view === "noshow" && <NoShow {...{ employees, noShows, addNoShow, removeNoShow }} />}
         {view === "audit" && <Audit {...{ log }} />}
+        {view === "help" && <Help />}
       </div>
+
+      {blocked && (
+        <div onClick={() => setBlocked(false)} style={{ position: "fixed", inset: 0,
+          background: "rgba(49,33,34,.45)", zIndex: 120, display: "flex",
+          alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: C.panel,
+            border: `1px solid ${C.line2}`, borderTop: `4px solid ${C.red}`, maxWidth: 460,
+            boxShadow: "0 18px 50px rgba(49,33,34,.3)" }}>
+            <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.line}`,
+              fontFamily: disp, fontSize: 17, letterSpacing: ".1em", textTransform: "uppercase",
+              color: C.red, fontWeight: 700 }}>Select your name first</div>
+            <div style={{ padding: "14px 18px", fontSize: 13.5, lineHeight: 1.55 }}>
+              Nothing can be changed until the <strong>Working as</strong> field at the top has a
+              name in it. Every change is recorded against whoever made it.
+              <div style={{ marginTop: 12 }}>
+                <select value={user} onChange={(e) => { setUser(e.target.value); if (e.target.value) setBlocked(false); }}
+                  style={{ width: "100%" }}>
+                  <option value="">— select your name —</option>
+                  {USERS.map((u) => <option key={u}>{u}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{ padding: "12px 18px", borderTop: `1px solid ${C.line}` }}>
+              <Btn onClick={() => setBlocked(false)}>Close</Btn>
+            </div>
+          </div>
+        </div>
+      )}
 
       {confirm && (
         <div onClick={(e) => e.stopPropagation()} style={{ position: "fixed", inset: 0,
@@ -1353,6 +1432,25 @@ function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, 
           <Btn small onClick={() => setGridStart(addDays(gridStart, -gridDays))}>◀</Btn>
           <Btn small onClick={() => setGridStart(addDays(gridStart, gridDays))}>▶</Btn>
           <Btn small onClick={() => setGridStart(addDays(focusDate, -3))}>Today</Btn>
+          <Btn small onClick={() => {
+            const head = ["Employee", "Crew", "Pattern", "Category", "Position"]
+              .concat(gridDates.map((d) => fmtShort(d)));
+            const rows = [
+              [`Syncline Haulage roster  ${fmtShort(gridDates[0])} to ${fmtShort(gridDates[gridDays - 1])}`],
+              [], head,
+            ];
+            visibleEmployees.forEach((emp) => {
+              const seg = segmentFor(emp, gridStart);
+              rows.push([emp.name, emp.crew, seg ? seg.pattern : "", emp.category, emp.position]
+                .concat(gridDates.map((d) => codeText(codeFor(emp, d)))));
+            });
+            rows.push([]);
+            rows.push(["Operators on site", "", "", "", ""]
+              .concat(gridDates.map((d) => (daily[dayIndex[d]] ? daily[dayIndex[d]].counts.ops : ""))));
+            rows.push(["Section 26 on site", "", "", "", ""]
+              .concat(gridDates.map((d) => (daily[dayIndex[d]] ? daily[dayIndex[d]].counts.s26 : ""))));
+            downloadCsv(`syncline-roster-${gridDates[0]}.csv`, rows);
+          }}>Export to Excel</Btn>
           <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>SIZE</span>
           <select value={cellW} onChange={(e) => setCellW(Number(e.target.value))}>
             <option value={40}>Large</option>
@@ -2196,7 +2294,8 @@ function StripCells({ cells }) {
    ============================================================ */
 
 function People({ employees, updateEmployee, changePattern, removePatternSegment, thresholds,
-  setThresholds, focusDate, addPerson, customPatterns, savePattern, deletePattern }) {
+  setThresholds, focusDate, addPerson, customPatterns, savePattern, deletePattern, loadImported }) {
+  const [confirmImport, setConfirmImport] = useState(false);
   const [pEmp, setPEmp] = useState(employees[6] ? employees[6].id : 1);
   const [pPattern, setPPattern] = useState("2:1");
   const [pFrom, setPFrom] = useState(focusDate);
@@ -2275,16 +2374,57 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
         </Panel>
       </div>
 
+      <Panel title="Imported roster" note="from Roster_20240409.xlsx — 26 mobilised, 1 Jul 2026 onward">
+        {!confirmImport ? (
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <Btn onClick={() => setConfirmImport(true)}>Reload the imported roster</Btn>
+            <span style={{ fontFamily: mono, fontSize: 10.5, color: C.dim }}>
+              use this once, to start the parallel run from the real roster
+            </span>
+          </div>
+        ) : (
+          <div style={{ border: `1px solid ${C.red}`, background: "#FCEAE7", padding: "12px 14px" }}>
+            <div style={{ fontSize: 13, marginBottom: 10, lineHeight: 1.55 }}>
+              This replaces everything on screen with the roster and personnel register taken from the
+              spreadsheet. Leave entries, travel records, requests and dismissed checks made in here are
+              cleared. The change log is kept.
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <Btn primary onClick={() => { loadImported(); setConfirmImport(false); }}>
+                Yes, replace what is here
+              </Btn>
+              <Btn onClick={() => setConfirmImport(false)}>Cancel</Btn>
+            </div>
+          </div>
+        )}
+      </Panel>
+
       <PatternBuilder {...{ customPatterns, savePattern, deletePattern }} />
 
       <AddPerson employees={employees} addPerson={addPerson} focusDate={focusDate} />
 
       <Panel title="Personnel" note="mobilisation and demobilisation dates drive the roster" pad={0}>
+        <div style={{ padding: "8px 12px", borderBottom: `1px solid ${C.line}`, background: C.panel2 }}>
+          <Btn small onClick={() => downloadCsv("syncline-personnel.csv", [
+            ["Name","Alias","SAP No","Category","Position","Crew","Pattern","Company","POH",
+             "Contract Type","Gender","ATSI","Email","Mobile No","Mobe date","Demobe Date"],
+            ...employees.map((e) => {
+              const sg = segmentFor(e, focusDate);
+              return [e.name, e.alias, e.sap, e.category, e.position, e.crew,
+                sg ? sg.pattern : "", e.company, e.poh, e.contract, e.gender, e.atsi,
+                e.email, e.phone, e.mobeDate, e.demobDate];
+            }),
+          ])}>Export register to Excel</Btn>
+        </div>
         <div style={{ overflowX: "auto" }}>
-          <table style={{ minWidth: 1080 }}>
+          <table style={{ minWidth: 1720 }}>
             <thead><tr>
-              <th style={th}>Name</th><th style={th}>Position</th><th style={th}>Crew</th>
-              <th style={th}>Pattern now</th><th style={th}>Mobe</th><th style={th}>Demobe</th>
+              <th style={th}>Name</th><th style={th}>Position</th><th style={th}>Category</th>
+              <th style={th}>Crew</th><th style={th}>Pattern now</th>
+              <th style={th}>Company</th><th style={th}>POH</th><th style={th}>Contract</th>
+              <th style={th}>Gender</th><th style={th}>ATSI</th>
+              <th style={th}>Email</th><th style={th}>Phone</th>
+              <th style={th}>Mobe</th><th style={th}>Demobe</th>
               <th style={th}>§26</th><th style={th}>LH</th><th style={th}>Grader</th>
             </tr></thead>
             <tbody>
@@ -2294,11 +2434,36 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
                   <tr key={e.id} style={{ opacity: e.demobDate ? 0.55 : 1 }}>
                     <td style={{ ...td, fontWeight: 500, whiteSpace: "nowrap" }}>{e.name}</td>
                     <td style={{ ...td, color: C.dim, fontSize: 11.5 }}>{e.position}</td>
+                    <td style={{ ...td, fontSize: 11.5 }}>{e.category}</td>
                     <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{e.crew}</td>
                     <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>
                       {seg ? seg.pattern : "—"}
                       <span style={{ color: C.dimmer }}> · {seg ? fmtShort(seg.anchor) : ""}</span>
                     </td>
+                    <td style={td}><input value={e.company || ""} style={{ width: 96 }}
+                      onChange={(ev) => updateEmployee(e.id, { company: ev.target.value })} /></td>
+                    <td style={td}><input value={e.poh || ""} style={{ width: 88 }}
+                      onChange={(ev) => updateEmployee(e.id, { poh: ev.target.value })} /></td>
+                    <td style={td}>
+                      <select value={e.contract || ""} onChange={(ev) => updateEmployee(e.id, { contract: ev.target.value })}>
+                        {["", "Full Time", "Part Time", "Casual", "Contractor", "Labour Hire"]
+                          .map((x) => <option key={x} value={x}>{x || "—"}</option>)}
+                      </select>
+                    </td>
+                    <td style={td}>
+                      <select value={e.gender || ""} onChange={(ev) => updateEmployee(e.id, { gender: ev.target.value })}>
+                        {["", "M", "F", "X"].map((x) => <option key={x} value={x}>{x || "—"}</option>)}
+                      </select>
+                    </td>
+                    <td style={{ ...td, textAlign: "center" }}>
+                      <input type="checkbox" checked={!!(e.atsi && e.atsi !== "N")}
+                        onChange={(ev) => updateEmployee(e.id, { atsi: ev.target.checked ? "Y" : "" })}
+                        style={{ width: 15, height: 15, accentColor: C.red }} />
+                    </td>
+                    <td style={td}><input value={e.email || ""} style={{ width: 168 }}
+                      onChange={(ev) => updateEmployee(e.id, { email: ev.target.value })} /></td>
+                    <td style={td}><input value={e.phone || ""} style={{ width: 108 }}
+                      onChange={(ev) => updateEmployee(e.id, { phone: ev.target.value })} /></td>
                     <td style={td}><input type="date" value={e.mobeDate || ""}
                       onChange={(ev) => updateEmployee(e.id, { mobeDate: ev.target.value })} /></td>
                     <td style={td}><input type="date" value={e.demobDate || ""}
@@ -2440,6 +2605,7 @@ function AddPerson({ employees, addPerson, focusDate }) {
   const [f, setF] = useState({
     name: "", alias: "", category: "Operator", position: "", poh: "Perth",
     crew: "A", pattern: "2:2", anchor: focusDate, mobeDate: focusDate,
+    company: "Syncline", contract: "Full Time", gender: "", atsi: "", email: "", phone: "", sap: "",
   });
   const [err, setErr] = useState("");
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
@@ -2505,6 +2671,33 @@ function AddPerson({ employees, addPerson, focusDate }) {
         <Field label="First swing starts">
           <input type="date" value={f.anchor} onChange={(e) => set("anchor", e.target.value)} style={{ width: "100%" }} />
         </Field>
+        <Field label="Company">
+          <input value={f.company} onChange={(e) => set("company", e.target.value)} style={{ width: "100%" }} />
+        </Field>
+        <Field label="SAP number">
+          <input value={f.sap} onChange={(e) => set("sap", e.target.value)} style={{ width: "100%" }} />
+        </Field>
+        <Field label="Contract type">
+          <select value={f.contract} onChange={(e) => set("contract", e.target.value)} style={{ width: "100%" }}>
+            {["Full Time", "Part Time", "Casual", "Contractor", "Labour Hire"].map((x) => <option key={x}>{x}</option>)}
+          </select>
+        </Field>
+        <Field label="Gender">
+          <select value={f.gender} onChange={(e) => set("gender", e.target.value)} style={{ width: "100%" }}>
+            {["", "M", "F", "X"].map((x) => <option key={x} value={x}>{x || "—"}</option>)}
+          </select>
+        </Field>
+        <Field label="ATSI">
+          <select value={f.atsi} onChange={(e) => set("atsi", e.target.value)} style={{ width: "100%" }}>
+            <option value="">Not stated</option><option value="Y">Yes</option><option value="N">No</option>
+          </select>
+        </Field>
+        <Field label="Email">
+          <input value={f.email} onChange={(e) => set("email", e.target.value)} style={{ width: "100%" }} />
+        </Field>
+        <Field label="Mobile">
+          <input value={f.phone} onChange={(e) => set("phone", e.target.value)} style={{ width: "100%" }} />
+        </Field>
       </div>
       {err && <div style={{ color: C.red, fontFamily: mono, fontSize: 11.5, marginBottom: 8 }}>{err}</div>}
       <div style={{ display: "flex", gap: 10 }}>
@@ -2520,6 +2713,250 @@ function AddPerson({ employees, addPerson, focusDate }) {
 }
 
 /* ============================================================
+   MANNING HISTOGRAM — the monthly report to FMG
+   ============================================================ */
+
+const HISTO_ROWS = [
+  { label: "No Of Operators on Day Shift", cat: "Operator", key: "opsDay" },
+  { label: "No of Operators on Night Shift", cat: "Operator", key: "opsNight" },
+  { label: "No of Leading Hands on Site", cat: "Leading Hand", key: "lead" },
+  { label: "No of Supervisors on Site", cat: "Supervisor", key: "sup" },
+  { label: "Project Manager on Site", cat: "Project Manager", key: "pm" },
+  { label: "HSE On Site", cat: "HSE Advisor", key: "hse" },
+];
+
+function Histogram({ daily, dayIndex, focusDate, thresholds }) {
+  const monthStart = focusDate.slice(0, 8) + "01";
+  const [from, setFrom] = useState(monthStart);
+  const [to, setTo] = useState(addDays(addDays(monthStart, 32).slice(0, 8) + "01", -1));
+  const [target, setTarget] = useState(8);
+
+  const days = useMemo(() => {
+    const out = [];
+    for (let d = from; d <= to && out.length < 200; d = addDays(d, 1)) {
+      const row = daily[dayIndex[d]];
+      if (row) out.push(row);
+    }
+    return out;
+  }, [from, to, daily, dayIndex]);
+
+  const val = (row, key) => (key === "opsDay" ? row.opsDay : key === "opsNight" ? row.opsNight : row.counts[key]);
+  const totals = days.map((d) => HISTO_ROWS.reduce((n, r) => n + val(d, r.key), 0));
+  const ratios = days.map((d) => (d.opsDay + d.opsNight) / (target || 8));
+  const avg = ratios.length ? ratios.reduce((a, b) => a + b, 0) / ratios.length : 0;
+  const maxTotal = Math.max(1, ...totals);
+
+  const exportCsv = () => {
+    const rows = [
+      ["From", from], ["To", to], [],
+      ["Category", "Position", ...days.map((d) => fmtShort(d.iso))],
+      ...HISTO_ROWS.map((r) => [r.label, r.cat, ...days.map((d) => val(d, r.key))]),
+      ["Total", "Total", ...totals],
+      [],
+      ["", "Operator Manning", ...ratios.map((x) => x.toFixed(3))],
+      ["", "Average Manning", avg.toFixed(4)],
+    ];
+    downloadCsv(`manning-histogram-${from}-to-${to}.csv`, rows);
+  };
+
+  const th = { textAlign: "left", padding: "5px 7px", fontFamily: disp, fontSize: 11,
+    letterSpacing: ".1em", color: C.dim, textTransform: "uppercase",
+    borderBottom: `1px solid ${C.line2}`, whiteSpace: "nowrap" };
+  const td = { padding: "4px 7px", borderBottom: `1px solid ${C.line}`, fontFamily: mono,
+    fontSize: 11, textAlign: "center" };
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <Panel title="Manning histogram" note="the monthly report to FMG">
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>FROM</span>
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+          <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>TO</span>
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+          <Btn small onClick={() => {
+            const ms = focusDate.slice(0, 8) + "01";
+            setFrom(ms); setTo(addDays(addDays(ms, 32).slice(0, 8) + "01", -1));
+          }}>This month</Btn>
+          <div style={{ width: 1, height: 22, background: C.line }} />
+          <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>TARGET OPERATORS</span>
+          <input type="number" min="1" max="40" value={target} style={{ width: 62 }}
+            onChange={(e) => setTarget(Number(e.target.value) || 1)} />
+          <div style={{ flex: 1 }} />
+          <Btn primary onClick={exportCsv} disabled={!days.length}>Export to Excel</Btn>
+        </div>
+        <div style={{ fontFamily: mono, fontSize: 11, color: C.dim, marginTop: 10 }}>
+          {days.length} days · average operator manning{" "}
+          <span style={{ color: avg >= 1 ? C.ok : C.red, fontWeight: 600 }}>{avg.toFixed(3)}</span>
+          {" "}against a target of {target}
+        </div>
+      </Panel>
+
+      <Panel title="Daily manning" pad={0}>
+        <div style={{ overflowX: "auto" }}>
+          <table>
+            <thead><tr>
+              <th style={th}>Category</th><th style={th}>Position</th>
+              {days.map((d) => <th key={d.iso} style={{ ...th, textAlign: "center" }}>
+                {parse(d.iso).getUTCDate()}<br />
+                <span style={{ fontFamily: mono, fontSize: 8.5, color: C.dimmer }}>
+                  {MON[parse(d.iso).getUTCMonth()]}</span>
+              </th>)}
+            </tr></thead>
+            <tbody>
+              {HISTO_ROWS.map((r) => (
+                <tr key={r.label}>
+                  <td style={{ ...td, textAlign: "left", fontFamily: sans, fontSize: 12 }}>{r.label}</td>
+                  <td style={{ ...td, textAlign: "left", color: C.dim }}>{r.cat}</td>
+                  {days.map((d) => <td key={d.iso} style={td}>{val(d, r.key)}</td>)}
+                </tr>
+              ))}
+              <tr style={{ background: C.panel2 }}>
+                <td style={{ ...td, textAlign: "left", fontWeight: 600, fontFamily: sans, fontSize: 12 }}>Total</td>
+                <td style={{ ...td, textAlign: "left", color: C.dim }}>Total</td>
+                {totals.map((t, i) => <td key={i} style={{ ...td, fontWeight: 600 }}>{t}</td>)}
+              </tr>
+              <tr>
+                <td style={{ ...td, textAlign: "left", fontFamily: sans, fontSize: 12 }}>Operator Manning</td>
+                <td style={td}></td>
+                {ratios.map((x, i) => <td key={i} style={{ ...td, color: x < 1 ? C.red : C.ok }}>
+                  {x.toFixed(2)}</td>)}
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      <Panel title="Total on site by day">
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 150, overflowX: "auto" }}>
+          {days.map((d, i) => (
+            <div key={d.iso} title={`${fmtLong(d.iso)} — ${totals[i]} on site, ${d.opsDay + d.opsNight} operators`}
+              style={{ flex: "0 0 16px", display: "flex", flexDirection: "column",
+                justifyContent: "flex-end", height: "100%" }}>
+              <div style={{ height: `${(d.opsNight / maxTotal) * 100}%`, background: "#2E3F66" }} />
+              <div style={{ height: `${(d.opsDay / maxTotal) * 100}%`, background: C.orange }} />
+              <div style={{ height: `${((totals[i] - d.opsDay - d.opsNight) / maxTotal) * 100}%`,
+                background: "#C8B8AE" }} />
+              <div style={{ fontFamily: mono, fontSize: 7, color: C.dimmer, textAlign: "center", height: 10 }}>
+                {parse(d.iso).getUTCDate()}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 16, marginTop: 8, fontFamily: mono, fontSize: 10, color: C.dim }}>
+          <span><span style={{ color: C.orange }}>█</span> operators, day shift</span>
+          <span><span style={{ color: "#2E3F66" }}>█</span> operators, night shift</span>
+          <span><span style={{ color: "#C8B8AE" }}>█</span> supervision, PM and HSE</span>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+/* ============================================================
+   NO SHOW REGISTER
+   ============================================================ */
+
+function NoShow({ employees, noShows, addNoShow, removeNoShow }) {
+  const [f, setF] = useState({ empId: employees[0] ? employees[0].id : 1, date: "",
+    flight: "", time: "", route: "PER-WHB", reason: "", reported: "",
+    rebookedDate: "", rebookedFlight: "", rebookedTime: "" });
+  const [err, setErr] = useState("");
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+
+  const submit = () => {
+    if (!f.date) { setErr("Enter the date of the missed flight."); return; }
+    if (!f.reason.trim()) { setErr("A reason is needed — this register gets read by FMG."); return; }
+    setErr("");
+    addNoShow(f);
+    setF({ ...f, date: "", flight: "", time: "", reason: "", reported: "",
+      rebookedDate: "", rebookedFlight: "", rebookedTime: "" });
+  };
+
+  const th = { textAlign: "left", padding: "6px 8px", fontFamily: disp, fontSize: 11,
+    letterSpacing: ".1em", color: C.dim, textTransform: "uppercase",
+    borderBottom: `1px solid ${C.line2}`, whiteSpace: "nowrap" };
+  const td = { padding: "5px 8px", borderBottom: `1px solid ${C.line}`, fontSize: 12 };
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <Panel title="Record a no show" note="marks the day on the roster as well">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
+          <Field label="Employee">
+            <select value={f.empId} onChange={(e) => set("empId", e.target.value)} style={{ width: "100%" }}>
+              {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Date"><input type="date" value={f.date}
+            onChange={(e) => set("date", e.target.value)} style={{ width: "100%" }} /></Field>
+          <Field label="Flight no"><input value={f.flight} placeholder="QF2920"
+            onChange={(e) => set("flight", e.target.value)} style={{ width: "100%" }} /></Field>
+          <Field label="Time"><input value={f.time} placeholder="06:00"
+            onChange={(e) => set("time", e.target.value)} style={{ width: "100%" }} /></Field>
+          <Field label="Route"><input value={f.route} placeholder="PER-WHB"
+            onChange={(e) => set("route", e.target.value)} style={{ width: "100%" }} /></Field>
+          <Field label="Reported to Eliwana Travel"><input value={f.reported}
+            placeholder="date, or Not Reported"
+            onChange={(e) => set("reported", e.target.value)} style={{ width: "100%" }} /></Field>
+          <Field label="Rebooked date"><input type="date" value={f.rebookedDate}
+            onChange={(e) => set("rebookedDate", e.target.value)} style={{ width: "100%" }} /></Field>
+          <Field label="Rebooked flight"><input value={f.rebookedFlight}
+            onChange={(e) => set("rebookedFlight", e.target.value)} style={{ width: "100%" }} /></Field>
+          <Field label="Rebooked time"><input value={f.rebookedTime}
+            onChange={(e) => set("rebookedTime", e.target.value)} style={{ width: "100%" }} /></Field>
+        </div>
+        <Field label="Reason">
+          <textarea rows={2} value={f.reason} onChange={(e) => set("reason", e.target.value)}
+            placeholder="what happened, and who it was reported to" style={{ width: "100%" }} />
+        </Field>
+        {err && <div style={{ color: C.red, fontFamily: mono, fontSize: 11.5, marginBottom: 8 }}>{err}</div>}
+        <Btn primary onClick={submit}>Add to the register</Btn>
+      </Panel>
+
+      <Panel title="No show register" note={`${noShows.length} records`} pad={0}>
+        <div style={{ padding: "8px 12px", borderBottom: `1px solid ${C.line}`, background: C.panel2 }}>
+          <Btn small disabled={!noShows.length} onClick={() => downloadCsv("no-show-register.csv", [
+            ["Name","Date","Flight No","Time","Route","Reason","Reported to Eliwana Travel",
+             "Rebooked Date","Flight No","Time","Entered by","Entered at"],
+            ...noShows.map((n) => [n.name, n.date, n.flight, n.time, n.route, n.reason,
+              n.reported, n.rebookedDate || "N/A", n.rebookedFlight || "N/A",
+              n.rebookedTime || "N/A", n.by, n.at]),
+          ])}>Export to Excel</Btn>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ minWidth: 1180 }}>
+            <thead><tr>
+              <th style={th}>Name</th><th style={th}>Date</th><th style={th}>Flight</th>
+              <th style={th}>Time</th><th style={th}>Route</th><th style={th}>Reason</th>
+              <th style={th}>Reported</th><th style={th}>Rebooked</th><th style={th}>Flight</th>
+              <th style={th}>Time</th><th style={th}></th>
+            </tr></thead>
+            <tbody>
+              {noShows.length === 0 && <tr><td style={{ ...td, color: C.dim, fontFamily: mono }} colSpan={11}>
+                Nothing recorded.</td></tr>}
+              {noShows.map((n) => (
+                <tr key={n.id}>
+                  <td style={{ ...td, whiteSpace: "nowrap", fontWeight: 500 }}>{n.name}</td>
+                  <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{n.date ? fmtShort(n.date) : ""}</td>
+                  <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{n.flight}</td>
+                  <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{n.time}</td>
+                  <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{n.route}</td>
+                  <td style={{ ...td, fontSize: 11.5, minWidth: 260 }}>{n.reason}</td>
+                  <td style={{ ...td, fontFamily: mono, fontSize: 10.5, color: C.dim }}>{n.reported}</td>
+                  <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>
+                    {n.rebookedDate ? fmtShort(n.rebookedDate) : "N/A"}</td>
+                  <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{n.rebookedFlight || "N/A"}</td>
+                  <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{n.rebookedTime || "N/A"}</td>
+                  <td style={td}><Btn small danger onClick={() => removeNoShow(n.id)}>Remove</Btn></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+/* ============================================================
    CHANGE LOG
    ============================================================ */
 
@@ -2529,7 +2966,7 @@ function Audit({ log }) {
   const [csv, setCsv] = useState("");
 
   const people = ["All", ...Array.from(new Set(log.map((l) => l.name)))];
-  const kinds = ["All", "cell", "leave", "person", "pattern", "request", "check"];
+  const kinds = ["All", "cell", "leave", "person", "pattern", "request", "check", "noshow"];
   const filtered = log.filter((l) => (who === "All" || l.name === who) && (kind === "All" || l.kind === kind));
 
   const makeCsv = () => {
@@ -2595,5 +3032,3 @@ function Audit({ log }) {
     </div>
   );
 }
-
-
