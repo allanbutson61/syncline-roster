@@ -1893,7 +1893,7 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
         const emp = matchEmployee(m.name, employees);
         return { key: i, raw: m.name, empId: emp ? emp.id : "", date: m.date || "",
           movement: movementFrom(m), state: m.confirmed === false ? "requested" : "confirmed",
-          flight: m.flight || "", use: !!emp };
+          flight: m.flight || "", status: m.status || "", use: !!emp };
       });
 
       /* someone flying in and back out on the same day is a day trip */
@@ -1991,8 +1991,11 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
           </div>
         </div>
         {err && <div style={{ color: C.red, fontFamily: mono, fontSize: 11.5, marginTop: 10, lineHeight: 1.5 }}>{err}</div>}
-        <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 10 }}>
-          Confirmed movements come back as C- codes. Nothing is written until you check the lines and apply.
+        <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 10, lineHeight: 1.6 }}>
+          Anything FMG hold a seat for — Confirmed or OverBooked — comes back as a C- code. Only
+          Requested, Waitlisted or TBC come back as -TBC. The FMG says column shows their exact
+          wording, so watch for OverBooked: the seat is held but it is worth keeping an eye on.
+          Nothing is written until you check the lines and apply.
         </div>
       </Panel>
 
@@ -2002,8 +2005,8 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
             <table>
               <thead><tr>
                 <th style={th}>Apply</th><th style={th}>Name in email</th><th style={th}>Matched to</th>
-                <th style={th}>Date</th><th style={th}>Movement</th><th style={th}>Status</th>
-                <th style={th}>Code</th><th style={th}>Flight</th>
+                <th style={th}>Date</th><th style={th}>Movement</th><th style={th}>Set as</th>
+                <th style={th}>Code</th><th style={th}>Flight</th><th style={th}>FMG says</th>
               </tr></thead>
               <tbody>
                 {rows.map((r, i) => (
@@ -2042,6 +2045,9 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
                     </td>
                     <td style={td}><Chip code={travelCode(r.movement, r.state)} /></td>
                     <td style={{ ...td, fontFamily: mono, fontSize: 11, color: C.dim }}>{r.flight || "—"}</td>
+                    <td style={{ ...td, fontFamily: mono, fontSize: 10.5,
+                      color: /over|wait|pend/i.test(r.status) ? C.orange : C.dim }}>
+                      {r.status || "—"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2310,6 +2316,31 @@ function StripCells({ cells }) {
 function People({ employees, updateEmployee, changePattern, removePatternSegment, thresholds,
   setThresholds, focusDate, addPerson, customPatterns, savePattern, deletePattern, loadImported }) {
   const [confirmImport, setConfirmImport] = useState(false);
+  const [pq, setPq] = useState("");
+  const [pf, setPf] = useState({ category: "All", crew: "All", company: "All",
+    contract: "All", poh: "All", atsi: "All", status: "Mobilised" });
+  const setF2 = (k, v) => setPf((x) => ({ ...x, [k]: v }));
+
+  const uniq = (key) => ["All", ...Array.from(new Set(employees
+    .map((e) => (e[key] || "").trim()).filter(Boolean))).sort()];
+
+  const shownPeople = employees.filter((e) => {
+    if (pf.status === "Mobilised" && e.demobDate) return false;
+    if (pf.status === "Demobilised" && !e.demobDate) return false;
+    for (const k of ["category", "crew", "company", "contract", "poh"]) {
+      if (pf[k] !== "All" && (e[k] || "").trim() !== pf[k]) return false;
+    }
+    if (pf.atsi === "Yes" && !(e.atsi && e.atsi !== "N")) return false;
+    if (pf.atsi === "No" && e.atsi && e.atsi !== "N") return false;
+    if (pq.trim()) {
+      const q = pq.toLowerCase();
+      const hay = [e.name, e.alias, e.position, e.category, e.crew, e.company, e.poh,
+        e.email, e.phone, e.sap, e.contract].map((x) => (x || "").toLowerCase()).join(" ");
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
   const [pEmp, setPEmp] = useState(employees[6] ? employees[6].id : 1);
   const [pPattern, setPPattern] = useState("2:1");
   const [pFrom, setPFrom] = useState(focusDate);
@@ -2417,12 +2448,41 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
 
       <AddPerson employees={employees} addPerson={addPerson} focusDate={focusDate} />
 
-      <Panel title="Personnel" note="mobilisation and demobilisation dates drive the roster" pad={0}>
+      <Panel title="Personnel"
+        note={`${shownPeople.length} of ${employees.length} · mobilisation dates drive the roster`} pad={0}>
+        <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.line}`, background: C.panel2,
+          display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>FIND</span>
+          <input value={pq} onChange={(e) => setPq(e.target.value)}
+            placeholder="any field — name, position, email, SAP" style={{ width: 250 }} />
+          {[["category", "role"], ["crew", "crew"], ["company", "company"],
+            ["contract", "contract"], ["poh", "point of hire"]].map(([k, label]) => (
+            <select key={k} value={pf[k]} onChange={(e) => setF2(k, e.target.value)}>
+              {uniq(k).map((x) => <option key={x} value={x}>{x === "All" ? `All ${label}s` : x}</option>)}
+            </select>
+          ))}
+          <select value={pf.atsi} onChange={(e) => setF2("atsi", e.target.value)}>
+            <option value="All">ATSI — all</option>
+            <option value="Yes">ATSI — yes</option>
+            <option value="No">ATSI — no</option>
+          </select>
+          <select value={pf.status} onChange={(e) => setF2("status", e.target.value)}>
+            <option value="Mobilised">Mobilised</option>
+            <option value="Demobilised">Demobilised</option>
+            <option value="All">Everyone</option>
+          </select>
+          {(pq || Object.values(pf).some((v) => v !== "All" && v !== "Mobilised")) && (
+            <Btn small danger onClick={() => { setPq(""); setPf({ category: "All", crew: "All",
+              company: "All", contract: "All", poh: "All", atsi: "All", status: "Mobilised" }); }}>
+              Clear filters
+            </Btn>
+          )}
+        </div>
         <div style={{ padding: "8px 12px", borderBottom: `1px solid ${C.line}`, background: C.panel2 }}>
           <Btn small onClick={() => downloadCsv("syncline-personnel.csv", [
             ["Name","Alias","SAP No","Category","Position","Crew","Pattern","Company","POH",
              "Contract Type","Gender","ATSI","Email","Mobile No","Mobe date","Demobe Date"],
-            ...employees.map((e) => {
+            ...shownPeople.map((e) => {
               const sg = segmentFor(e, focusDate);
               return [e.name, e.alias, e.sap, e.category, e.position, e.crew,
                 sg ? sg.pattern : "", e.company, e.poh, e.contract, e.gender, e.atsi,
@@ -2442,7 +2502,11 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
               <th style={th}>§26</th><th style={th}>LH</th><th style={th}>Grader</th>
             </tr></thead>
             <tbody>
-              {employees.map((e) => {
+              {shownPeople.length === 0 && (
+                <tr><td colSpan={17} style={{ ...td, color: C.dim, fontFamily: mono }}>
+                  Nobody matches those filters.</td></tr>
+              )}
+              {shownPeople.map((e) => {
                 const seg = segmentFor(e, focusDate);
                 return (
                   <tr key={e.id} style={{ opacity: e.demobDate ? 0.55 : 1 }}>
@@ -2768,7 +2832,12 @@ function Histogram({ daily, dayIndex, focusDate, thresholds }) {
   const totals = days.map((d) =>
     HISTO_ROWS.reduce((n, r) => n + (r.inTotal ? val(d, r.key) : 0), 0));
   const ratios = days.map((d) => (d.opsDay + d.opsNight) / (target || 8));
-  const avg = ratios.length ? ratios.reduce((a, b) => a + b, 0) / ratios.length : 0;
+  const mean = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+  const avg = mean(ratios);
+  const avgOpsDay = mean(days.map((d) => d.opsDay));
+  const avgOpsNight = mean(days.map((d) => d.opsNight));
+  const avgOpsAll = avgOpsDay + avgOpsNight;
+  const avgOnSite = mean(totals);
   const maxTotal = Math.max(1, ...totals);
 
   const exportCsv = () => {
@@ -2779,7 +2848,13 @@ function Histogram({ daily, dayIndex, focusDate, thresholds }) {
       ["Total", "Total", ...totals],
       [],
       ["", "Operator Manning", ...ratios.map((x) => x.toFixed(3))],
-      ["", "Average Manning", avg.toFixed(4)],
+      [],
+      ["Averages over the period"],
+      ["Average operators on day shift", avgOpsDay.toFixed(2)],
+      ["Average operators on night shift", avgOpsNight.toFixed(2)],
+      ["Average operators on site", avgOpsAll.toFixed(2)],
+      ["Average total on site", avgOnSite.toFixed(2)],
+      ["Average manning ratio", `${avg.toFixed(4)} (average operators divided by the target of ${target})`],
     ];
     downloadCsv(`manning-histogram-${from}-to-${to}.csv`, rows);
   };
@@ -2813,10 +2888,23 @@ function Histogram({ daily, dayIndex, focusDate, thresholds }) {
           Leading hands are counted inside the operator rows, so that line is shown for information
           only and is not added into the total.
         </div>
-        <div style={{ fontFamily: mono, fontSize: 11, color: C.dim, marginTop: 6 }}>
-          {days.length} days · average operator manning{" "}
-          <span style={{ color: avg >= 1 ? C.ok : C.red, fontWeight: 600 }}>{avg.toFixed(3)}</span>
-          {" "}against a target of {target}
+        <div style={{ display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginTop: 12 }}>
+          {[
+            ["Average operators on site", avgOpsAll.toFixed(2), `${avgOpsDay.toFixed(2)} day · ${avgOpsNight.toFixed(2)} night`],
+            ["Average total on site", avgOnSite.toFixed(2), "all categories"],
+            ["Average manning ratio", avg.toFixed(3), `operators ÷ target of ${target}`],
+            ["Days in the period", String(days.length), `${fmtShort(from)} – ${fmtShort(to)}`],
+          ].map(([l, v, sub]) => (
+            <div key={l} style={{ background: C.panel2, border: `1px solid ${C.line}`,
+              borderTop: `3px solid ${C.orange}`, padding: "8px 11px 10px", borderRadius: 2 }}>
+              <div style={{ fontFamily: disp, fontSize: 11, letterSpacing: ".12em",
+                textTransform: "uppercase", color: C.dim }}>{l}</div>
+              <div style={{ fontFamily: mono, fontSize: 24, fontWeight: 600, color: C.ink,
+                lineHeight: 1.15, marginTop: 3 }}>{v}</div>
+              <div style={{ fontFamily: mono, fontSize: 10, color: C.dimmer, marginTop: 2 }}>{sub}</div>
+            </div>
+          ))}
         </div>
       </Panel>
 
