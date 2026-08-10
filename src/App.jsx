@@ -440,7 +440,52 @@ function Stat({ label, n, bad }) {
    APP
    ============================================================ */
 
+/* If anything goes wrong on screen, say so plainly instead of showing a
+   blank page — and give the person something they can send back. */
+class ErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state = { err: null }; }
+  static getDerivedStateFromError(err) { return { err }; }
+  componentDidCatch(err, info) { console.error("Roster Control crashed", err, info); }
+  render() {
+    if (!this.state.err) return this.props.children;
+    const detail = String(this.state.err && (this.state.err.stack || this.state.err.message || this.state.err));
+    return (
+      <div style={{ background: C.page, minHeight: "100vh", fontFamily: sans, color: C.ink,
+        padding: 24 }}>
+        <div style={{ maxWidth: 620, margin: "40px auto", background: C.panel,
+          border: `1px solid ${C.line}`, borderTop: `4px solid ${C.red}`, borderRadius: 2 }}>
+          <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.line}`,
+            fontFamily: disp, fontSize: 18, letterSpacing: ".1em", textTransform: "uppercase",
+            color: C.red, fontWeight: 700 }}>Something went wrong on this screen</div>
+          <div style={{ padding: "16px 18px", fontSize: 13.5, lineHeight: 1.6 }}>
+            Nothing has been lost — the roster is safe. Try the button below, and if it keeps
+            happening send the wording underneath to Allan.
+            <div style={{ marginTop: 14 }}>
+              <button onClick={() => this.setState({ err: null })} style={{ background: C.red,
+                color: "#FFF", border: `1px solid ${C.red}`, padding: "9px 16px", borderRadius: 2,
+                cursor: "pointer", fontFamily: disp, fontSize: 14, letterSpacing: ".1em",
+                textTransform: "uppercase", fontWeight: 600, marginRight: 8 }}>Try again</button>
+              <button onClick={() => window.location.reload()} style={{ background: "transparent",
+                color: C.ink, border: `1px solid ${C.line2}`, padding: "9px 16px", borderRadius: 2,
+                cursor: "pointer", fontFamily: disp, fontSize: 14, letterSpacing: ".1em",
+                textTransform: "uppercase", fontWeight: 600 }}>Reload the page</button>
+            </div>
+            <textarea readOnly value={detail} rows={7} onFocus={(e) => e.target.select()}
+              style={{ width: "100%", marginTop: 16, fontFamily: mono, fontSize: 11,
+                border: `1px solid ${C.line2}`, borderRadius: 2, padding: 8, background: C.panel2,
+                color: C.dim }} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+}
+
 export default function App() {
+  return <ErrorBoundary><AppInner /></ErrorBoundary>;
+}
+
+function AppInner() {
   const [profile, setProfile] = useState(undefined);   // undefined = still checking
 
   useEffect(() => {
@@ -2125,6 +2170,18 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
     letterSpacing: ".1em", color: C.dim, textTransform: "uppercase", borderBottom: `1px solid ${C.line2}` };
   const td = { padding: "5px 8px", borderBottom: `1px solid ${C.line}`, fontSize: 12 };
   const [showDone, setShowDone] = useState(false);
+
+  const todayIso = toISO(new Date());
+  const watchList = Object.keys(watch || {}).map((k) => {
+    const bar = k.indexOf("|");
+    const empId = Number(k.slice(0, bar));
+    const iso = k.slice(bar + 1);
+    const emp = employees.find((e) => e.id === empId);
+    const item = watch[k] || {};
+    return { key: k, empId, iso, name: emp ? emp.name : "?", code: item.code,
+      why: item.why || "", days: diffDays(todayIso, iso) };
+  }).sort((a, b) => (a.iso < b.iso ? -1 : 1));
+
   const allTravelActions = actions.filter((a) => a.kind === "travel");
   const travelActions = showDone ? allTravelActions : allTravelActions.filter((a) => !a.done);
   const doneCount = allTravelActions.filter((a) => a.done).length;
