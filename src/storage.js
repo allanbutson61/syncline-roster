@@ -76,7 +76,7 @@ async function loadShared() {
     throw firstError;
   }
 
-  /* nothing there yet — let the app seed itself from the spreadsheet */
+  /* Nothing there at all — let the app seed itself from the spreadsheet. */
   if (!peopleRows.data.length && !cells.data.length) return null;
 
   const overrides = {};
@@ -100,8 +100,15 @@ async function loadShared() {
   const settings = {};
   settingRows.data.forEach((r) => (settings[r.key] = r.value));
 
+  /* The personnel table is administrator-only. If it is empty but the roster
+     is not, the first save was made by someone without permission to write it.
+     Leave employees undefined so the app keeps the ones it seeded and writes
+     them up on the next save, rather than showing an empty People tab. */
+  const havePeople = peopleRows.data.length > 0;
+  if (!havePeople) console.warn("No personnel in the database yet — using the seeded list.");
+
   const snapshot = {
-    employees: peopleRows.data.map((r) => r.data),
+    employees: havePeople ? peopleRows.data.map((r) => r.data) : undefined,
     overrides, watch,
     ...lists,
     thresholds: settings.thresholds || undefined,
@@ -196,9 +203,7 @@ async function saveShared(snapshot) {
   const bad = results.map((r) => r && r.error).find(Boolean);
   if (bad) {
     console.error("Could not save part of the roster", bad);
-    /* a supervisor editing personnel or settings is refused by the database,
-       which is intended — everything else in the batch still went through */
-    if (!/row-level security|violates/i.test(bad.message || "")) return false;
+    return false;
   }
 
   last = { ...snapshot, __settings: {

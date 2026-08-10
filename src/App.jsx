@@ -660,7 +660,9 @@ function Roster({ profile }) {
     try {
       const d = await loadRoster();
       if (d) {
-        if (d.employees) setEmployees(d.employees);
+        /* an empty list means the personnel have not been written yet —
+           keep the seeded ones rather than showing an empty People tab */
+        if (d.employees && d.employees.length) setEmployees(d.employees);
         if (d.overrides) setOverrides(d.overrides);
         if (d.leaveRecords) setLeaveRecords(d.leaveRecords);
         if (d.travel) setTravel(d.travel);
