@@ -2059,7 +2059,46 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate }) {
     setNote("");
   };
 
-  const sorted = leaveRecords.slice().sort((a, b) => (a.from < b.from ? 1 : -1));
+  /* ---- filters ---- */
+  const [q, setQ] = useState("");
+  const [fType, setFType] = useState("All");
+  const [fBy, setFBy] = useState("All");
+  const [fWhen, setFWhen] = useState("All");
+  const [fFrom, setFFrom] = useState("");
+  const [fTo, setFTo] = useState("");
+
+  const today = toISO(new Date());
+  const nameOf = (r) => {
+    const e = employees.find((x) => x.id === r.empId);
+    return e ? e.name : "";
+  };
+
+  const types = ["All", ...Array.from(new Set(leaveRecords.map((r) => r.code))).sort()];
+  const enteredBy = ["All", ...Array.from(new Set(leaveRecords.map((r) => r.by).filter(Boolean))).sort()];
+
+  const filtered = leaveRecords.filter((r) => {
+    if (fType !== "All" && r.code !== fType) return false;
+    if (fBy !== "All" && r.by !== fBy) return false;
+    if (fWhen === "Current" && !(r.from <= today && r.to >= today)) return false;
+    if (fWhen === "Upcoming" && !(r.from > today)) return false;
+    if (fWhen === "Past" && !(r.to < today)) return false;
+    /* a date range shows any leave that overlaps it */
+    if (fFrom && r.to < fFrom) return false;
+    if (fTo && r.from > fTo) return false;
+    if (q.trim()) {
+      const needle = q.toLowerCase();
+      const hay = `${nameOf(r)} ${r.code} ${r.note || ""} ${r.by || ""}`.toLowerCase();
+      if (!hay.includes(needle)) return false;
+    }
+    return true;
+  });
+
+  const totalDays = filtered.reduce((n, r) => n + diffDays(r.to, r.from) + 1, 0);
+  const anyFilter = q || fType !== "All" || fBy !== "All" || fWhen !== "All" || fFrom || fTo;
+  const clearAll = () => { setQ(""); setFType("All"); setFBy("All"); setFWhen("All");
+    setFFrom(""); setFTo(""); };
+
+  const sorted = filtered.slice().sort((a, b) => (a.from < b.from ? 1 : -1));
   const th = { textAlign: "left", padding: "7px 10px", fontFamily: disp, fontSize: 11.5,
     letterSpacing: ".12em", color: C.dim, textTransform: "uppercase", borderBottom: `1px solid ${C.line2}` };
   const td = { padding: "6px 10px", borderBottom: `1px solid ${C.line}`, fontSize: 12.5 };
@@ -2092,7 +2131,36 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate }) {
         </div>
       </Panel>
 
-      <Panel title="Leave register" note={`${leaveRecords.length} records`} pad={0}>
+      <Panel title="Leave register"
+        note={`${filtered.length} of ${leaveRecords.length} records · ${totalDays} days`} pad={0}>
+        <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.line}`, background: C.panel2,
+          display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>FIND</span>
+          <input value={q} onChange={(e) => setQ(e.target.value)}
+            placeholder="name, note or who entered it" style={{ width: 220 }} />
+          <select value={fType} onChange={(e) => setFType(e.target.value)}>
+            {types.map((t) => <option key={t} value={t}>
+              {t === "All" ? "All types" : `${t} · ${CODES[t] ? CODES[t].label : t}`}</option>)}
+          </select>
+          <select value={fWhen} onChange={(e) => setFWhen(e.target.value)}>
+            <option value="All">Any time</option>
+            <option value="Current">On leave now</option>
+            <option value="Upcoming">Still to come</option>
+            <option value="Past">Finished</option>
+          </select>
+          <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>BETWEEN</span>
+          <input type="date" value={fFrom} onChange={(e) => setFFrom(e.target.value)} />
+          <input type="date" value={fTo} onChange={(e) => setFTo(e.target.value)} />
+          <select value={fBy} onChange={(e) => setFBy(e.target.value)}>
+            {enteredBy.map((b) => <option key={b} value={b}>{b === "All" ? "Anyone" : b}</option>)}
+          </select>
+          {anyFilter && <Btn small danger onClick={clearAll}>Clear filters</Btn>}
+          <Btn small disabled={!filtered.length} onClick={() => downloadCsv("leave-register.csv", [
+            ["Employee", "Type", "Description", "From", "To", "Days", "Note", "Entered by", "Entered at"],
+            ...sorted.map((r) => [nameOf(r), r.code, CODES[r.code] ? CODES[r.code].label : "",
+              r.from, r.to, diffDays(r.to, r.from) + 1, r.note || "", r.by || "", r.at || ""]),
+          ])}>Export to Excel</Btn>
+        </div>
         <div style={{ overflowX: "auto" }}>
           <table>
             <thead><tr>
@@ -2102,12 +2170,17 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate }) {
             </tr></thead>
             <tbody>
               {sorted.length === 0 && <tr><td style={{ ...td, color: C.dim, fontFamily: mono }} colSpan={8}>
-                No leave recorded.</td></tr>}
+                {leaveRecords.length ? "Nothing matches those filters." : "No leave recorded."}</td></tr>}
               {sorted.map((r) => {
                 const emp = employees.find((e) => e.id === r.empId);
+                const on = r.from <= today && r.to >= today;
                 return (
-                  <tr key={r.id}>
-                    <td style={{ ...td, whiteSpace: "nowrap" }}>{emp ? emp.name : "?"}</td>
+                  <tr key={r.id} style={{ background: on ? "#FDF4EE" : "transparent" }}>
+                    <td style={{ ...td, whiteSpace: "nowrap" }}>
+                      {emp ? emp.name : "?"}
+                      {on && <span style={{ fontFamily: mono, fontSize: 9.5, color: C.orange,
+                        marginLeft: 6 }}>on leave now</span>}
+                    </td>
                     <td style={td}><Chip code={r.code} /></td>
                     <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{fmtShort(r.from)}</td>
                     <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{fmtShort(r.to)}</td>
