@@ -237,6 +237,9 @@ const SECTIONS = [
           The checking table is not a formality — it is the control that stops a bad read going into
           the roster. Never skip it.
         </Note>
+        <P>The <b>FMG says</b> column shows their exact booking wording. Anything they hold a seat for
+          — Confirmed or OverBooked — comes in as a C- code. Only Requested, Waitlisted or TBC come in
+          as -TBC. Watch the OverBooked ones: the seat is held, but it is worth keeping an eye on.</P>
         <P>When you apply a fly-in and a fly-out together, the system fills the days between with the
           work days from that person's pattern. If only the inbound leg is confirmed, it fills the
           swing and puts a still-to-request fly-out on the last day, so it shows up in the count.</P>
