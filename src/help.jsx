@@ -26,6 +26,7 @@ const SW = {
   FIA:       ["#FFFFFF", "#B02423", "#B02423"],
   "FIA-TBC": ["#FBE3CF", "#A8541B", "#DC7A40", true],
   "C-FIA":   ["#1E88A8", "#FFFFFF", "#1E88A8"],
+  "FOP-WL":  ["#FCE2DE", "#9B2B22", "#B02423", true],
 };
 
 function Sw({ code }) {
@@ -154,7 +155,12 @@ const SECTIONS = [
           [<Sw code="FIA" />, "Still to request", "Put it into the FMG workflow"],
           [<Sw code="FIA-TBC" />, "Requested, waiting on the travel team", "Wait, then confirm"],
           [<Sw code="C-FIA" />, "Confirmed by FMG", "Nothing — it is booked"],
+          [<Sw code="FOP-WL" />, "Waitlisted — the seat is not held", "Keep checking until FMG confirm it"],
         ]} />
+        <P>A waitlisted seat sits <b>alongside</b> the roster rather than on it, so nobody is counted
+          as travelling on a seat that is not held. It shows as a pink strip along the bottom of the
+          cell, and every one of them is listed on the Travel tab under <b>Waitlisted — keep checking</b>.
+          Press <b>Confirmed</b> there once FMG hold it and it goes onto the roster as a C- code.</P>
         <P>The letters say what the movement is: <b>FIA / FIP</b> fly in morning or afternoon,
           <b> FOA / FOP</b> fly out morning or afternoon, <b>DIA / DOP</b> drive in or out, and
           <b> DT</b> a day trip — in and back out the same day.</P>

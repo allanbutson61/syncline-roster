@@ -50,9 +50,10 @@ const MOVEMENTS = {
 };
 
 const TRAVEL_STATES = {
-  toRequest: { suffix: "",     prefix: "",   word: "to request" },
-  requested: { suffix: "-TBC", prefix: "",   word: "requested — awaiting travel team" },
-  confirmed: { suffix: "",     prefix: "C-", word: "confirmed by FMG" },
+  toRequest:  { suffix: "",     prefix: "",   word: "to request" },
+  requested:  { suffix: "-TBC", prefix: "",   word: "requested — awaiting travel team" },
+  waitlisted: { suffix: "-WL",  prefix: "",   word: "waitlisted — keep checking" },
+  confirmed:  { suffix: "",     prefix: "C-", word: "confirmed by FMG" },
 };
 
 const travelCode = (mv, state) =>
@@ -87,8 +88,9 @@ Object.keys(MOVEMENTS).forEach((mv) => {
   Object.keys(TRAVEL_STATES).forEach((st) => {
     CODES[travelCode(mv, st)] = {
       label: `${m.label} — ${TRAVEL_STATES[st].word}`,
-      group: "Travel", onsite: m.onsite, movement: mv, dir: m.dir, travelState: st,
-      risk: st === "toRequest",
+      group: "Travel", onsite: st === "waitlisted" ? false : m.onsite,
+      movement: mv, dir: m.dir, travelState: st,
+      risk: st === "toRequest" || st === "waitlisted",
     };
   });
 });
@@ -130,6 +132,7 @@ function codeStyle(code) {
   if (meta.movement) {
     if (meta.travelState === "confirmed") return ["#1E88A8", "#FFFFFF", "#1E88A8"];
     if (meta.travelState === "requested") return ["#FBE3CF", "#A8541B", "#DC7A40"];
+    if (meta.travelState === "waitlisted") return ["#FCE2DE", "#9B2B22", "#B02423"];
     return ["#FFFFFF", "#B02423", "#B02423"];
   }
   if (SOLID[code]) return SOLID[code];
@@ -491,13 +494,17 @@ export default function App() {
   const [undoStack, setUndoStack] = useState([]);
   const [customPatterns, setCustomPatterns_] = useState({});
   const [noShows, setNoShows] = useState(() => NOSHOWS.slice());
+  /* watch: empId|date -> a waitlisted movement running alongside whatever
+     is actually on the roster that day. Shown on the cell, tracked on the
+     Travel tab, and ignored by the roster checks until it is confirmed. */
+  const [watch, setWatch] = useState({});
 
   const hydrated = useRef(false);
   const saveTimer = useRef(null);
 
   const snapshot = () => ({
     employees, overrides, leaveRecords, travel, requests, actions, log, thresholds, dismissed,
-    customPatterns, noShows,
+    customPatterns, noShows, watch,
     savedAt: nowStamp(), savedBy: user || "unknown",
   });
 
@@ -517,6 +524,7 @@ export default function App() {
         if (d.dismissed) setDismissed(d.dismissed);
         if (d.customPatterns) setCustomPatterns_(d.customPatterns);
         if (d.noShows) setNoShows(d.noShows);
+        if (d.watch) setWatch(d.watch);
         setSync({ state: "ok", at: d.savedAt, by: d.savedBy });
       } else setSync({ state: "empty", at: null, by: null });
     } catch {
@@ -543,7 +551,7 @@ export default function App() {
     }, 900);
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds, dismissed, customPatterns, noShows]);
+  }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds, dismissed, customPatterns, noShows, watch]);
 
   const userRef = useRef(user);
   useEffect(() => { userRef.current = user; }, [user]);
@@ -872,10 +880,18 @@ export default function App() {
       if (!emp) return;
       const list = byEmp[key].slice().sort((a, b) => (a.date < b.date ? -1 : 1));
 
-      list.forEach((r) => applyCell(empId, r.date, travelCode(r.movement, r.state),
-        `FMG travel${r.flight ? " " + r.flight : ""}`));
+      list.forEach((r) => {
+        if (r.state === "waitlisted") {
+          addWatch(empId, r.date, travelCode(r.movement, "waitlisted"),
+            `waitlisted with FMG${r.flight ? " — " + r.flight : ""}`);
+          return;
+        }
+        applyCell(empId, r.date, travelCode(r.movement, r.state),
+          `FMG travel${r.flight ? " " + r.flight : ""}`);
+      });
 
       list.forEach((r) => {
+        if (r.state === "waitlisted") return;
         if (MOVEMENTS[r.movement].dir !== "IN") return;
 
         /* the matching departure: in this batch first, then the existing roster */
@@ -935,6 +951,29 @@ export default function App() {
     setDismissed({}); setUndoStack([]);
     record({ kind: "person", empId: 0, name: "—", date: "—", from: "saved roster",
       to: "imported roster", why: "reloaded from the Excel workbook" });
+  };
+
+  const addWatch = (empId, iso, code, why) => {
+    const emp = employees.find((e) => e.id === empId);
+    setWatch((w) => ({ ...w, [empId + "|" + iso]: { code, at: nowStamp(),
+      by: user || "unsigned", why: why || "" } }));
+    record({ kind: "cell", empId, name: emp ? emp.name : "?", date: iso,
+      from: "—", to: code, why: why || "waitlisted seat noted" });
+  };
+
+  const clearWatch = (empId, iso) => {
+    if (!requireUser()) return;
+    setWatch((w) => { const n = { ...w }; delete n[empId + "|" + iso]; return n; });
+  };
+
+  /* the waitlist came through — put it on the roster as confirmed */
+  const confirmWatch = (empId, iso) => {
+    if (!requireUser()) return;
+    const item = watch[empId + "|" + iso];
+    if (!item) return;
+    const mv = movementOf(item.code);
+    if (mv) applyCell(empId, iso, travelCode(mv, "confirmed"), "waitlisted seat confirmed by FMG");
+    setWatch((w) => { const n = { ...w }; delete n[empId + "|" + iso]; return n; });
   };
 
   const addNoShow = (rec) => {
@@ -1149,15 +1188,15 @@ export default function App() {
       <div style={{ padding: 18 }}>
         {view === "dash" && <Dashboard {...{ today, daily, dayIndex, focusDate, setFocusDate,
           thresholds, upcoming, upcomingAnomalies, jumpTo, toRequestCount, setView,
-          dismissAnomaly, actions, markActionDone, employees }} />}
-        {view === "grid" && <Grid {...{ visibleEmployees, employees, gridStart, setGridStart, gridDays,
+          dismissAnomaly, actions, markActionDone, employees, watchList: watch }} />}
+        {view === "grid" && <Grid {...{ watch, visibleEmployees, employees, gridStart, setGridStart, gridDays,
           setGridDays, cellW, setCellW, codeFor, setCell, brush, setBrush, painting, setPainting, daily, dayIndex,
           undo, undoStack,
           thresholds, crews, cats, crewFilter, setCrewFilter, catFilter, setCatFilter, search,
           setSearch, picked, setPicked, focusDate, setFocusDate, overrides, menu, setMenu, anomalies }} />}
         {view === "leave" && <Leave {...{ employees, leaveRecords, addLeave, removeLeave, focusDate }} />}
         {view === "travel" && <Travel {...{ employees, travel, setTravel, setCell, actions, user,
-          applyTravelBatch, markActionDone }} />}
+          applyTravelBatch, markActionDone, watch, employees, confirmWatch, clearWatch }} />}
         {view === "requests" && <Requests {...{ employees, requests, submitRequest, markRequested,
           declineRequest, codeFor, focusDate, problemsFromChanges }} />}
         {view === "people" && <People {...{ employees, updateEmployee, changePattern,
@@ -1243,11 +1282,12 @@ export default function App() {
 
 function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds, upcoming,
   upcomingAnomalies, jumpTo, toRequestCount, setView, dismissAnomaly, actions, markActionDone,
-  employees }) {
+  employees, watchList }) {
   const railStart = Math.max(0, (dayIndex[focusDate] || 0) - 7);
   const rail = daily.slice(railStart, railStart + 90);
   const maxOps = Math.max(12, ...rail.map((d) => d.counts.ops));
 
+  const watchCount = Object.keys(watchList || {}).length;
   const [alertFrom, setAlertFrom] = useState(focusDate);
   const [alertTo, setAlertTo] = useState(addDays(focusDate, 90));
   const [alertType, setAlertType] = useState("All");
@@ -1283,6 +1323,8 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
         })}
         <Tile label="Travel to request" value={toRequestCount} sub="not yet sent to travel team"
           state={toRequestCount ? "warn" : "ok"} onClick={() => setView("grid")} />
+        <Tile label="Waitlisted seats" value={watchCount} sub="keep checking with FMG"
+          state={watchCount ? "bad" : "ok"} onClick={() => setView("travel")} />
       </div>
 
       <Panel title="Manning rail — next 90 days"
@@ -1394,7 +1436,7 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
    ROSTER GRID
    ============================================================ */
 
-function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, setGridDays, cellW,
+function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gridDays, setGridDays, cellW,
   setCellW, codeFor, undo, undoStack,
   setCell, brush, setBrush, painting, setPainting, daily, dayIndex, thresholds, crews, cats,
   crewFilter, setCrewFilter, catFilter, setCatFilter, search, setSearch, picked, setPicked,
@@ -1529,7 +1571,8 @@ function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, 
         <Btn small onClick={() => setBrush("__clear")}>Clear cells</Btn>
         <div style={{ marginLeft: "auto", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontFamily: disp, fontSize: 11.5, letterSpacing: ".12em", color: C.dim }}>TRAVEL</span>
-          {[["FIA", "to request"], ["FIA-TBC", "requested"], ["C-FIA", "confirmed"]].map(([c, l]) => (
+          {[["FIA", "to request"], ["FIA-TBC", "requested"], ["C-FIA", "confirmed"],
+            ["FOP-WL", "waitlisted"]].map(([c, l]) => (
             <span key={c} style={{ display: "flex", alignItems: "center", gap: 5 }}>
               <Chip code={c} small />
               <span style={{ fontFamily: mono, fontSize: 10, color: C.dim }}>{l}</span>
@@ -1628,6 +1671,7 @@ function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, 
                   const isOverride = (emp.id + "|" + iso) in overrides;
                   const st = travelState(code);
                   const anom = anomalyMap[emp.id + "|" + iso];
+                  const wl = watch[emp.id + "|" + iso];
                   return (
                     <div key={iso} className="cell"
                       onClick={(e) => e.stopPropagation()}
@@ -1638,7 +1682,9 @@ function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, 
                       onMouseEnter={() => { if (painting && brush !== "__select") setCell(emp.id, iso, brush); }}
                       title={`${emp.name} · ${fmtLong(iso)} · ${preMobe ? "not yet mobilised"
                         : postDemob ? "demobilised"
-                        : code ? (CODES[code] ? CODES[code].label : code) : "not rostered"}${anom ? " — " + anom.msg : ""}`}
+                        : code ? (CODES[code] ? CODES[code].label : code) : "not rostered"}${
+                        wl ? "\nAlso waitlisted: " + (CODES[wl.code] ? CODES[wl.code].label : wl.code) : ""}${
+                        anom ? " — " + anom.msg : ""}`}
                       style={{ width: CW, flex: `0 0 ${CW}px`, height: 30, color: fg,
                         background: preMobe || postDemob
                           ? "repeating-linear-gradient(45deg, #F3EEEA, #F3EEEA 3px, #E5DED8 3px, #E5DED8 6px)" : bg,
@@ -1646,7 +1692,18 @@ function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, 
                         justifyContent: "center", fontFamily: mono, fontSize: CW >= 32 ? 9 : 7.5,
                         cursor: "cell", userSelect: "none", position: "relative",
                         boxShadow: st && st !== "confirmed" ? `inset 0 0 0 2px ${br}` : "none" }}>
-                      {preMobe || postDemob ? "" : showText ? codeText(code) : ""}
+                      {preMobe || postDemob ? "" : showText
+                        ? (wl ? <span style={{ marginTop: -8 }}>{codeText(code)}</span> : codeText(code))
+                        : ""}
+                      {wl && !preMobe && !postDemob && (
+                        <div title={`Also waitlisted: ${CODES[wl.code] ? CODES[wl.code].label : wl.code}`}
+                          style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 11,
+                            background: "#FCE2DE", color: "#9B2B22", fontFamily: mono,
+                            fontSize: CW >= 32 ? 7.5 : 6.5, lineHeight: "11px", textAlign: "center",
+                            borderTop: `1px dashed ${C.red}`, overflow: "hidden" }}>
+                          {CW >= 26 ? wl.code : "WL"}
+                        </div>
+                      )}
                       {isOverride && !preMobe && !postDemob && (
                         <div style={{ position: "absolute", top: 1, right: 1, width: 4, height: 4,
                           background: C.red, borderRadius: "50%" }} />
@@ -1665,6 +1722,7 @@ function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, 
       <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, lineHeight: 1.6 }}>
         Plain blue = day shift. Red dot = manual change over the pattern. Hatched = outside mobilisation
         dates. Red bar along the bottom of a cell = the roster checks have flagged that day.
+        A pink strip along the bottom of a cell is a waitlisted seat running alongside — keep checking it.
       </div>
 
       {menu && (
@@ -1682,12 +1740,12 @@ function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, 
           ))}
           <div style={{ padding: "6px 10px", fontFamily: disp, fontSize: 11.5, letterSpacing: ".12em",
             color: C.dim, background: C.panel2, borderTop: `1px solid ${C.line}` }}>
-            TRAVEL — to request / TBC / confirmed
+            TRAVEL — to request / TBC / waitlisted / confirmed
           </div>
           {["FIA", "FIP", "FOA", "FOP", "DT"].map((mv) => (
             <div key={mv} style={{ display: "flex", alignItems: "center", borderBottom: `1px solid ${C.line}` }}>
               <div style={{ width: 42, padding: "6px 8px", fontFamily: mono, fontSize: 11, color: C.dim }}>{mv}</div>
-              {["toRequest", "requested", "confirmed"].map((st) => {
+              {["toRequest", "requested", "waitlisted", "confirmed"].map((st) => {
                 const code = travelCode(mv, st);
                 const [bg, fg, br] = codeStyle(code);
                 return (
@@ -1697,7 +1755,8 @@ function Grid({ visibleEmployees, employees, gridStart, setGridStart, gridDays, 
                       fontFamily: mono, fontSize: 9, background: bg, color: fg,
                       border: `1px solid ${br}`, borderStyle: st === "requested" ? "dashed" : "solid",
                       margin: 2 }}>
-                    {st === "toRequest" ? "req" : st === "requested" ? "TBC" : "C-"}
+                    {st === "toRequest" ? "req" : st === "requested" ? "TBC"
+                      : st === "waitlisted" ? "WL" : "C-"}
                   </div>
                 );
               })}
@@ -1842,7 +1901,8 @@ function movementFrom(m) {
   return MOVEMENTS[mv] ? mv : dir === "I" ? "FIA" : "FOP";
 }
 
-function Travel({ employees, travel, setTravel, setCell, actions, user, applyTravelBatch, markActionDone }) {
+function Travel({ employees, travel, setTravel, setCell, actions, user, applyTravelBatch,
+  markActionDone, watch, confirmWatch, clearWatch }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -1891,16 +1951,20 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
       }
       let mapped = parsed.map((m, i) => {
         const emp = matchEmployee(m.name, employees);
+        const st = m.status || "";
+        const state = /wait/i.test(st) ? "waitlisted"
+          : m.confirmed === false ? "requested" : "confirmed";
         return { key: i, raw: m.name, empId: emp ? emp.id : "", date: m.date || "",
-          movement: movementFrom(m), state: m.confirmed === false ? "requested" : "confirmed",
-          flight: m.flight || "", status: m.status || "", use: !!emp };
+          movement: movementFrom(m), state, flight: m.flight || "", status: st, use: !!emp };
       });
 
       /* FMG sometimes list two seats on the same leg — one held, one waitlisted.
          Keep the confirmed one and leave the other unticked with a note. */
       mapped.forEach((r) => {
         if (!r.empId) return;
+        if (r.state === "waitlisted") return;
         const same = mapped.filter((x) => x.empId === r.empId && x.date === r.date
+          && x.state !== "waitlisted"
           && MOVEMENTS[x.movement] && MOVEMENTS[r.movement]
           && MOVEMENTS[x.movement].dir === MOVEMENTS[r.movement].dir);
         if (same.length < 2) return;
@@ -1991,6 +2055,35 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
         </Panel>
       )}
 
+      {watchList.length > 0 && (
+        <Panel title="Waitlisted — keep checking"
+          note={`${watchList.length} seat${watchList.length === 1 ? "" : "s"} not yet held by FMG`} pad={0}>
+          {watchList.map((w) => (
+            <div key={w.key} style={{ display: "flex", gap: 12, alignItems: "center",
+              padding: "9px 16px", borderBottom: `1px solid ${C.line}`,
+              borderLeft: `3px solid ${C.red}` }}>
+              <div style={{ fontFamily: mono, fontSize: 11, color: C.dim, width: 78 }}>
+                {fmtShort(w.iso)}</div>
+              <div style={{ fontSize: 13, flex: 1, fontWeight: 500 }}>{w.name}</div>
+              <Chip code={w.code} />
+              <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, width: 210,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{w.why}</div>
+              <div style={{ fontFamily: mono, fontSize: 10, color: w.days > 7 ? C.red : C.dimmer,
+                width: 92 }}>
+                {w.days < 0 ? `${-w.days}d away` : w.days === 0 ? "today" : `${w.days}d past`}
+              </div>
+              <Btn small primary onClick={() => confirmWatch(w.empId, w.iso)}>Confirmed</Btn>
+              <Btn small danger onClick={() => clearWatch(w.empId, w.iso)}>Drop</Btn>
+            </div>
+          ))}
+          <div style={{ padding: "9px 16px", fontFamily: mono, fontSize: 10.5, color: C.dim,
+            lineHeight: 1.6 }}>
+            These sit alongside the roster rather than on it — nobody is counted as travelling on a
+            waitlisted seat. Press Confirmed once FMG hold it and it goes onto the roster as a C- code.
+          </div>
+        </Panel>
+      )}
+
       <Panel title="Read a travel email from FMG" note="paste the email, or attach the PDF they send">
         <div style={{ display: "grid", gridTemplateColumns: "1fr auto", gap: 12, alignItems: "start" }}>
           <textarea rows={7} value={text} onChange={(e) => { setText(e.target.value); setPdf(null); }}
@@ -2056,6 +2149,7 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
                       <select value={r.state}
                         onChange={(e) => setRows((rs) => rs.map((x, j) => j === i ? { ...x, state: e.target.value } : x))}>
                         <option value="confirmed">Confirmed</option>
+                        <option value="waitlisted">Waitlisted — track alongside</option>
                         <option value="requested">Requested (TBC)</option>
                         <option value="toRequest">Still to request</option>
                       </select>
@@ -2134,6 +2228,7 @@ function ManualTravel({ employees, setCell, setTravel, user }) {
           <select value={state} onChange={(e) => setState(e.target.value)} style={{ width: "100%" }}>
             <option value="toRequest">Still to request</option>
             <option value="requested">Requested — TBC</option>
+            <option value="waitlisted">Waitlisted</option>
             <option value="confirmed">Confirmed</option>
           </select>
         </Field>
