@@ -399,20 +399,43 @@ const SECTIONS = [
     ),
   },
   {
-    id: "limits", title: "What it does not do yet",
+    id: "limits", title: "Signing in, and what it still cannot do",
     body: (
       <>
+        <H>Signing in</H>
+        <P>You sign in with your own email and password. Everyone is working on the same roster, so a
+          change you make appears on everyone else's screen within a second or two, recorded against
+          your name.</P>
+        <P>If someone else changes something while you have it open, a green <b>updated by someone
+          else</b> tag appears at the top and the screen refreshes itself. You do not need to do
+          anything.</P>
+        <P>Forgotten your password? Use the link on the sign-in page. Need an account, or a change of
+          access? Ask Jaki.</P>
+
+        <H>Who can change what</H>
+        <Rows head={["", "Administrators", "Site supervision"]} rows={[
+          ["The roster, day to day", "Yes", "Yes"],
+          ["Leave", "Yes", "Yes"],
+          ["Travel and requests", "Yes", "Yes"],
+          ["No show register", "Yes", "Yes"],
+          ["Personnel records", "Yes", "Read only"],
+          ["Roster patterns", "Yes", "Read only"],
+          ["Coverage minimums", "Yes", "Read only"],
+        ]} />
+        <P>If you try to change something that isn't yours to change, the system says so and points
+          you at the office. It is enforced by the database as well, not just the screen.</P>
+
+        <H>What it still cannot do</H>
         <ul style={{ margin: "0 0 14px", paddingLeft: 20 }}>
           {[
-            "Your roster is saved in your own browser. Geraldton and site are not yet looking at the same copy — do not assume someone else can see a change you have made.",
-            "There are no real logins. The name you pick is on trust, so the change log is a working record and not evidence.",
-            "Clearing your browser data will wipe what you have entered. Export anything you cannot afford to lose.",
+            "If two people change the same person on the same day within a second of each other, the later one wins. Everything else merges cleanly.",
             "It needs an internet connection. There is no offline mode.",
-            "Emails to the administrator are built but not switched on, so travel actions and requests show on screen only.",
+            "Emails to the administrator are built but may not be switched on yet — check whether travel actions say emailed or not.",
           ].map((t, i) => (
             <li key={i} style={{ fontSize: 13.5, lineHeight: 1.6, marginBottom: 6 }}>{t}</li>
           ))}
         </ul>
+
         <H>During the parallel run</H>
         <P>Keep doing the spreadsheet as normal and enter the same things here. Where the two disagree,
           work out which is right and why — a difference is either a fault in the system or something
@@ -425,6 +448,7 @@ const SECTIONS = [
 ];
 
 /* ---------- the tab ---------- */
+
 
 export default function Help() {
   const [open, setOpen] = useState("start");

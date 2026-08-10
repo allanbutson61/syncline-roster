@@ -1,5 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import { loadRoster, saveRoster, STORAGE_MODE } from "./storage.js";
+import { loadRoster, saveRoster, STORAGE_MODE, onRemoteChange, forgetCache } from "./storage.js";
+import { CONFIGURED, currentProfile, onAuthChange, signOut } from "./supabase.js";
+import SignIn from "./signin.jsx";
 import { PEOPLE, OVERRIDES, NOSHOWS } from "./seed.js";
 import Help from "./help.jsx";
 import LOGO from "./logo.js";
@@ -439,6 +441,30 @@ function Stat({ label, n, bad }) {
    ============================================================ */
 
 export default function App() {
+  const [profile, setProfile] = useState(undefined);   // undefined = still checking
+
+  useEffect(() => {
+    if (!CONFIGURED) { setProfile(null); return; }
+    let live = true;
+    const read = () => currentProfile().then((p) => { if (live) setProfile(p); });
+    read();
+    const stop = onAuthChange(read);
+    return () => { live = false; stop(); };
+  }, []);
+
+  if (CONFIGURED && profile === undefined) {
+    return (
+      <div style={{ background: C.page, minHeight: "100vh", display: "flex",
+        alignItems: "center", justifyContent: "center", fontFamily: mono,
+        fontSize: 13, color: C.dim }}>Loading…</div>
+    );
+  }
+  if (CONFIGURED && !profile) return <SignIn />;
+
+  return <Roster profile={profile} />;
+}
+
+function Roster({ profile }) {
   const buildEmployees = () =>
     PEOPLE.map((r, i) => {
       const pos = (r.position || "").toLowerCase();
@@ -474,7 +500,8 @@ export default function App() {
   const [log, setLog] = useState([]);
   const [thresholds, setThresholds] = useState(Object.fromEntries(METRICS.map((m) => [m.id, m.min])));
 
-  const [user, setUser] = useState("");
+  const [user, setUser] = useState(profile ? profile.name : "");
+  const isAdmin = !profile || profile.role === "admin";
   const [view, setView] = useState("dash");
   const [focusDate, setFocusDate] = useState("2026-07-29");
   const [gridStart, setGridStart] = useState("2026-07-27");
@@ -490,6 +517,13 @@ export default function App() {
   const [sync, setSync] = useState({ state: "idle", at: null, by: null });
   const [confirm, setConfirm] = useState(null);
   const [blocked, setBlocked] = useState(false);
+  const [remoteNote, setRemoteNote] = useState(null);
+  useEffect(() => {
+    if (!remoteNote) return;
+    const t = setTimeout(() => setRemoteNote(null), 6000);
+    return () => clearTimeout(t);
+  }, [remoteNote]);
+  const [denied, setDenied] = useState(false);
   const [dismissed, setDismissed] = useState({});
   const [undoStack, setUndoStack] = useState([]);
   const [customPatterns, setCustomPatterns_] = useState({});
@@ -535,11 +569,28 @@ export default function App() {
 
   useEffect(() => { loadShared(); }, [loadShared]);
 
+  /* When someone else changes something, pull it in. We ignore the echo
+     of our own writes for a moment so the screen does not flicker. */
+  const savingUntil = useRef(0);
+  useEffect(() => {
+    let timer = null;
+    const stop = onRemoteChange(() => {
+      if (Date.now() < savingUntil.current) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        loadShared();
+        setRemoteNote(nowStamp());
+      }, 700);
+    });
+    return () => { clearTimeout(timer); stop(); };
+  }, [loadShared]);
+
   useEffect(() => {
     if (!hydrated.current) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       setSync((s) => ({ ...s, state: "saving" }));
+      savingUntil.current = Date.now() + 2500;
       try {
         const snap = snapshot();
         const ok = await saveRoster(snap);
@@ -562,6 +613,18 @@ export default function App() {
     setBlocked(true);
     return false;
   }, []);
+
+  const adminRef = useRef(isAdmin);
+  useEffect(() => { adminRef.current = isAdmin; }, [isAdmin]);
+
+  /* personnel records, roster patterns and coverage minimums are the
+     office's to change — the database enforces this too */
+  const requireAdmin = useCallback(() => {
+    if (!requireUser()) return false;
+    if (adminRef.current) return true;
+    setDenied(true);
+    return false;
+  }, [requireUser]);
 
   const record = useCallback((entry) => {
     setLog((l) => [{ ...entry, at: nowStamp(), by: user || "unsigned" }, ...l].slice(0, 800));
@@ -843,7 +906,7 @@ export default function App() {
   };
 
   const updateEmployee = (id, patch) => {
-    if (!requireUser()) return;
+    if (!requireAdmin()) return;
     const emp = employees.find((e) => e.id === id);
     /* the grader and leading hand flags are read off the position text, so keep
        them in step when the position changes — they stay editable by hand */
@@ -928,7 +991,7 @@ export default function App() {
   };
 
   const savePattern = (name, seq) => {
-    if (!requireUser()) return;
+    if (!requireAdmin()) return;
     setCustomPatterns_((c) => ({ ...c, [name]: { seq, label: describeSeq(seq) } }));
     record({ kind: "pattern", empId: 0, name: "—", date: "—",
       from: customPatterns[name] ? "edited" : "new pattern", to: name, why: describeSeq(seq) });
@@ -943,7 +1006,8 @@ export default function App() {
   };
 
   const loadImported = () => {
-    if (!requireUser()) return;
+    if (!requireAdmin()) return;
+    forgetCache();
     setEmployees(buildEmployees());
     setOverrides(buildOverrides());
     setNoShows(NOSHOWS.slice());
@@ -995,7 +1059,7 @@ export default function App() {
   };
 
   const addPerson = (p) => {
-    if (!requireUser()) return;
+    if (!requireAdmin()) return;
     const id = Math.max(0, ...employees.map((e) => e.id)) + 1;
     const pos = (p.position || "").toLowerCase();
     const person = {
@@ -1014,7 +1078,7 @@ export default function App() {
   };
 
   const changePattern = (empId, from, pattern, anchor) => {
-    if (!requireUser()) return;
+    if (!requireAdmin()) return;
     const emp = employees.find((e) => e.id === empId);
     if (!emp) return;
     const prev = segmentFor(emp, addDays(from, -1));
@@ -1151,23 +1215,43 @@ export default function App() {
       <div style={{ padding: "8px 18px", borderBottom: `1px solid ${C.line}`, background: C.panel2,
         display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
         <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>WORKING AS</span>
-        <select value={user} onChange={(e) => setUser(e.target.value)}>
-          <option value="">— select your name —</option>
-          {USERS.map((u) => <option key={u}>{u}</option>)}
-        </select>
-        {!user && <span style={{ fontFamily: mono, fontSize: 11, color: C.red }}>
-          Pick your name so changes are attributed.</span>}
+        {profile ? (
+          <>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>{profile.name}</span>
+            <span style={{ fontFamily: mono, fontSize: 10, color: "#FFF", background: C.dim,
+              padding: "2px 7px", borderRadius: 2, textTransform: "uppercase",
+              letterSpacing: ".08em" }}>
+              {profile.role === "admin" ? "admin" : "supervisor"}
+            </span>
+            <Btn small onClick={() => signOut()}>Sign out</Btn>
+          </>
+        ) : (
+          <>
+            <select value={user} onChange={(e) => setUser(e.target.value)}>
+              <option value="">— select your name —</option>
+              {USERS.map((u) => <option key={u}>{u}</option>)}
+            </select>
+            {!user && <span style={{ fontFamily: mono, fontSize: 11, color: C.red }}>
+              Pick your name so changes are attributed.</span>}
+          </>
+        )}
         <div style={{ display: "flex", gap: 14, marginLeft: "auto", alignItems: "center", flexWrap: "wrap" }}>
           <Stat label="Coverage" n={upcoming.length} bad={upcoming.some((a) => a.sev === "critical")} />
           <Stat label="Roster checks" n={upcomingAnomalies.length} bad={upcomingAnomalies.some((a) => a.sev === "critical")} />
           <Stat label="Travel to request" n={toRequestCount} bad={false} />
           <Stat label="Requests" n={pendingRequests} bad={false} />
+          {remoteNote && (
+            <span title={`Updated ${fmtStamp(remoteNote)}`} style={{ fontFamily: mono, fontSize: 10.5,
+              color: "#FFF", background: C.ok, padding: "2px 7px", borderRadius: 2 }}>
+              updated by someone else
+            </span>
+          )}
           <span style={{ fontFamily: mono, fontSize: 10.5, color: sync.state === "error" ? C.red : C.dimmer }}>
             {sync.state === "saving" ? "saving…"
               : sync.state === "loading" ? "loading…"
               : sync.state === "error" ? "save failed"
-              : sync.at ? `${STORAGE_MODE === "local" ? "saved locally" : "shared"} ${fmtStamp(sync.at)}`
-              : "nothing saved yet"}
+              : sync.at ? `${STORAGE_MODE === "local" ? "saved to this browser" : "shared roster"} ${fmtStamp(sync.at)}`
+              : STORAGE_MODE === "local" ? "nothing saved yet" : "shared roster"}
           </span>
           <Btn small onClick={loadShared}>Refresh</Btn>
         </div>
@@ -1201,12 +1285,36 @@ export default function App() {
           declineRequest, codeFor, focusDate, problemsFromChanges }} />}
         {view === "people" && <People {...{ employees, updateEmployee, changePattern,
           removePatternSegment, thresholds, setThresholds, focusDate, addPerson,
-          customPatterns, savePattern, deletePattern, loadImported }} />}
+          customPatterns, savePattern, deletePattern, loadImported, isAdmin, requireAdmin }} />}
         {view === "histogram" && <Histogram {...{ daily, dayIndex, focusDate, thresholds }} />}
         {view === "noshow" && <NoShow {...{ employees, noShows, addNoShow, removeNoShow }} />}
         {view === "audit" && <Audit {...{ log }} />}
         {view === "help" && <Help />}
       </div>
+
+      {denied && (
+        <div onClick={() => setDenied(false)} style={{ position: "fixed", inset: 0,
+          background: "rgba(49,33,34,.45)", zIndex: 120, display: "flex",
+          alignItems: "center", justifyContent: "center", padding: 20 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: C.panel,
+            border: `1px solid ${C.line2}`, borderTop: `4px solid ${C.orange}`, maxWidth: 440,
+            boxShadow: "0 18px 50px rgba(49,33,34,.3)" }}>
+            <div style={{ padding: "14px 18px", borderBottom: `1px solid ${C.line}`,
+              fontFamily: disp, fontSize: 17, letterSpacing: ".1em", textTransform: "uppercase",
+              color: C.orange, fontWeight: 700 }}>The office changes this</div>
+            <div style={{ padding: "14px 18px", fontSize: 13.5, lineHeight: 1.6 }}>
+              Personnel records, roster patterns and coverage minimums are kept by the
+              administrators. Ask Jaki and she can make the change.
+              <div style={{ marginTop: 8, color: C.dim }}>
+                The roster itself, leave and travel requests are all still yours to change.
+              </div>
+            </div>
+            <div style={{ padding: "12px 18px", borderTop: `1px solid ${C.line}` }}>
+              <Btn onClick={() => setDenied(false)}>Close</Btn>
+            </div>
+          </div>
+        </div>
+      )}
 
       {blocked && (
         <div onClick={() => setBlocked(false)} style={{ position: "fixed", inset: 0,
@@ -1221,13 +1329,15 @@ export default function App() {
             <div style={{ padding: "14px 18px", fontSize: 13.5, lineHeight: 1.55 }}>
               Nothing can be changed until the <strong>Working as</strong> field at the top has a
               name in it. Every change is recorded against whoever made it.
-              <div style={{ marginTop: 12 }}>
-                <select value={user} onChange={(e) => { setUser(e.target.value); if (e.target.value) setBlocked(false); }}
-                  style={{ width: "100%" }}>
-                  <option value="">— select your name —</option>
-                  {USERS.map((u) => <option key={u}>{u}</option>)}
-                </select>
-              </div>
+              {!profile && (
+                <div style={{ marginTop: 12 }}>
+                  <select value={user} onChange={(e) => { setUser(e.target.value); if (e.target.value) setBlocked(false); }}
+                    style={{ width: "100%" }}>
+                    <option value="">— select your name —</option>
+                    {USERS.map((u) => <option key={u}>{u}</option>)}
+                  </select>
+                </div>
+              )}
             </div>
             <div style={{ padding: "12px 18px", borderTop: `1px solid ${C.line}` }}>
               <Btn onClick={() => setBlocked(false)}>Close</Btn>
@@ -2428,7 +2538,8 @@ function StripCells({ cells }) {
    ============================================================ */
 
 function People({ employees, updateEmployee, changePattern, removePatternSegment, thresholds,
-  setThresholds, focusDate, addPerson, customPatterns, savePattern, deletePattern, loadImported }) {
+  setThresholds, focusDate, addPerson, customPatterns, savePattern, deletePattern, loadImported,
+  isAdmin, requireAdmin }) {
   const [confirmImport, setConfirmImport] = useState(false);
   const [pq, setPq] = useState("");
   const [pf, setPf] = useState({ category: "All", crew: "All", company: "All",
@@ -2526,14 +2637,24 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
               <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <div style={{ flex: 1, fontSize: 12.5 }}>{m.name}</div>
                 <input type="number" min="0" max="30" value={thresholds[m.id]} style={{ width: 62 }}
-                  onChange={(e) => setThresholds((t) => ({ ...t, [m.id]: Number(e.target.value) || 0 }))} />
+                  disabled={!isAdmin}
+                  onChange={(e) => isAdmin && setThresholds((t) => ({ ...t, [m.id]: Number(e.target.value) || 0 }))} />
               </div>
             ))}
           </div>
         </Panel>
       </div>
 
-      <Panel title="Imported roster" note="from Roster_20240409.xlsx — 26 mobilised, 1 Jul 2026 onward">
+      {!isAdmin && (
+        <div style={{ border: `1px solid ${C.orange}`, borderLeft: `4px solid ${C.orange}`,
+          background: "#FDF4EE", padding: "11px 14px", borderRadius: 2, fontSize: 13,
+          lineHeight: 1.55 }}>
+          <b>Read only.</b> Personnel records, roster patterns and coverage minimums are changed by
+          the office. You can still edit the roster, enter leave and raise travel requests.
+        </div>
+      )}
+
+      {isAdmin && <Panel title="Imported roster" note="from Roster_20240409.xlsx — 26 mobilised, 1 Jul 2026 onward">
         {!confirmImport ? (
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <Btn onClick={() => setConfirmImport(true)}>Reload the imported roster</Btn>
@@ -2556,11 +2677,11 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
             </div>
           </div>
         )}
-      </Panel>
+      </Panel>}
 
-      <PatternBuilder {...{ customPatterns, savePattern, deletePattern }} />
+      {isAdmin && <PatternBuilder {...{ customPatterns, savePattern, deletePattern }} />}
 
-      <AddPerson employees={employees} addPerson={addPerson} focusDate={focusDate} />
+      {isAdmin && <AddPerson employees={employees} addPerson={addPerson} focusDate={focusDate} />}
 
       <Panel title="Personnel"
         note={`${shownPeople.length} of ${employees.length} · mobilisation dates drive the roster`} pad={0}>
