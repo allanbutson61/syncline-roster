@@ -907,13 +907,20 @@ function Roster({ profile }) {
       from: "flagged", to: "checked and cleared", why: a.msg });
   };
 
+  /* Counters look ahead a working window, not the whole horizon. Over 640 days
+     the pattern generates travel for years out and the numbers stop meaning
+     anything. NEAR_DAYS is what the office can actually act on. */
+  const NEAR_DAYS = 90;
+  const nearEnd = addDays(focusDate, NEAR_DAYS);
+
   const toRequestCount = useMemo(() => {
     let n = 0;
     employees.forEach((e) => DATES.forEach((iso) => {
+      if (iso < focusDate || iso > nearEnd) return;
       if (travelState(codeFor(e, iso)) === "toRequest") n++;
     }));
     return n;
-  }, [employees, codeFor]);
+  }, [employees, codeFor, focusDate, nearEnd]);
 
   const alerts = useMemo(() => {
     const out = [];
@@ -928,8 +935,12 @@ function Roster({ profile }) {
     return out;
   }, [daily, thresholds]);
 
-  const upcoming = useMemo(() => alerts.filter((a) => a.iso >= focusDate).slice(0, 250), [alerts, focusDate]);
-  const upcomingAnomalies = useMemo(() => anomalies.filter((a) => a.iso >= focusDate).slice(0, 120), [anomalies, focusDate]);
+  const upcoming = useMemo(
+    () => alerts.filter((a) => a.iso >= focusDate && a.iso <= nearEnd).slice(0, 400),
+    [alerts, focusDate, nearEnd]);
+  const upcomingAnomalies = useMemo(
+    () => anomalies.filter((a) => a.iso >= focusDate && a.iso <= nearEnd).slice(0, 300),
+    [anomalies, focusDate, nearEnd]);
   const pendingRequests = requests.filter((r) => r.status === "pending").length;
 
   useEffect(() => {
@@ -1381,6 +1392,9 @@ function Roster({ profile }) {
           </>
         )}
         <div style={{ display: "flex", gap: 14, marginLeft: "auto", alignItems: "center", flexWrap: "wrap" }}>
+          <span title="Counts look ahead 90 days from the date shown"
+            style={{ fontFamily: disp, fontSize: 11, letterSpacing: ".1em", color: C.dimmer,
+              textTransform: "uppercase" }}>next 90 days</span>
           <Stat label="Coverage" n={upcoming.length} bad={upcoming.some((a) => a.sev === "critical")} />
           <Stat label="Roster checks" n={upcomingAnomalies.length} bad={upcomingAnomalies.some((a) => a.sev === "critical")} />
           <Stat label="Travel to request" n={toRequestCount} bad={false} />
@@ -1430,7 +1444,8 @@ function Roster({ profile }) {
           declineRequest, codeFor, focusDate, problemsFromChanges }} />}
         {view === "people" && <People {...{ employees, updateEmployee, changePattern,
           removePatternSegment, thresholds, setThresholds, focusDate, addPerson,
-          customPatterns, savePattern, deletePattern, loadImported, isAdmin, requireAdmin }} />}
+          customPatterns, savePattern, deletePattern, loadImported, isAdmin, requireAdmin,
+          userName: user }} />}
         {view === "flights" && <Flights />}
         {view === "histogram" && <Histogram {...{ daily, dayIndex, focusDate, thresholds }} />}
         {view === "noshow" && <NoShow {...{ employees, noShows, addNoShow, removeNoShow }} />}
@@ -1577,7 +1592,7 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
           return <Tile key={m.id} label={m.name} value={have} sub={sub}
             state={state} onClick={() => jumpTo(focusDate)} />;
         })}
-        <Tile label="Travel to request" value={toRequestCount} sub="not yet sent to travel team"
+        <Tile label="Travel to request" value={toRequestCount} sub="next 90 days"
           state={toRequestCount ? "warn" : "ok"} onClick={() => setView("grid")} />
         <Tile label="Waitlisted seats" value={watchCount} sub="keep checking with FMG"
           state={watchCount ? "bad" : "ok"} onClick={() => setView("travel")} />
@@ -2789,7 +2804,7 @@ function StripCells({ cells }) {
 
 function People({ employees, updateEmployee, changePattern, removePatternSegment, thresholds,
   setThresholds, focusDate, addPerson, customPatterns, savePattern, deletePattern, loadImported,
-  isAdmin, requireAdmin }) {
+  isAdmin, requireAdmin, userName }) {
   const [confirmImport, setConfirmImport] = useState(false);
   const [pq, setPq] = useState("");
   const [pf, setPf] = useState({ category: "All", crew: "All", company: "All",
@@ -2904,12 +2919,12 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
         </div>
       )}
 
-      {isAdmin && <Panel title="Imported roster" note="from Roster_20240409.xlsx — 26 mobilised, 1 Jul 2026 onward">
+      {isAdmin && <Panel title="Imported roster" note="from Roster_20240409.xlsx — 26 mobilised, 1 Jan 2026 onward">
         {!confirmImport ? (
           <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
             <Btn onClick={() => setConfirmImport(true)}>Reload the imported roster</Btn>
             <span style={{ fontFamily: mono, fontSize: 10.5, color: C.dim }}>
-              use this once, to start the parallel run from the real roster
+              replaces the roster and personnel with the spreadsheet — use with care now you are live
             </span>
           </div>
         ) : (
@@ -2933,6 +2948,8 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
       </Panel>}
 
       {isAdmin && <PatternBuilder {...{ customPatterns, savePattern, deletePattern }} />}
+
+      {isAdmin && <EmailSetup user={userName} />}
 
       {isAdmin && <AddPerson employees={employees} addPerson={addPerson} focusDate={focusDate} />}
 
@@ -3170,6 +3187,79 @@ function PatternBuilder({ customPatterns, savePattern, deletePattern }) {
           </div>
         </div>
       </div>
+    </Panel>
+  );
+}
+
+function EmailSetup({ user }) {
+  const [state, setState] = useState({ loading: true });
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    let live = true;
+    fetch("/api/notify", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ check: true }) })
+      .then((r) => r.json())
+      .then((d) => { if (live) setState({ loading: false, ...d }); })
+      .catch(() => { if (live) setState({ loading: false, configured: false,
+        missing: ["the function is not responding"] }); });
+    return () => { live = false; };
+  }, []);
+
+  const sendTest = async () => {
+    setBusy(true); setResult(null);
+    try {
+      const r = await fetch("/api/notify", { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ test: true, by: user }) });
+      const d = await r.json();
+      setResult(r.ok
+        ? { ok: true, msg: `Sent to ${(d.to || []).join(", ")}. Check the inbox, and the junk folder.` }
+        : { ok: false, msg: d.error || "It did not send." });
+    } catch {
+      setResult({ ok: false, msg: "Could not reach the email service." });
+    }
+    setBusy(false);
+  };
+
+  const on = state.configured;
+  return (
+    <Panel title="Email notifications"
+      note={state.loading ? "checking…" : on ? "switched on" : "not switched on yet"}>
+      {state.loading ? (
+        <div style={{ fontFamily: mono, fontSize: 12, color: C.dim }}>checking…</div>
+      ) : on ? (
+        <>
+          <div style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 10 }}>
+            Travel actions and travel change requests are emailed to{" "}
+            <b>{(state.to || []).join(", ")}</b>, sent from <b>{state.from}</b>.
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <Btn onClick={sendTest} disabled={busy}>{busy ? "Sending…" : "Send a test email"}</Btn>
+            {result && (
+              <span style={{ fontFamily: mono, fontSize: 11.5, color: result.ok ? C.ok : C.red,
+                maxWidth: 460, lineHeight: 1.5 }}>{result.msg}</span>
+            )}
+          </div>
+        </>
+      ) : (
+        <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+          Travel actions and requests show on screen only. To have them emailed as well, three
+          settings are needed in Netlify:
+          <ul style={{ margin: "8px 0 8px", paddingLeft: 20 }}>
+            <li style={{ marginBottom: 3 }}><b>RESEND_API_KEY</b> — a key from resend.com</li>
+            <li style={{ marginBottom: 3 }}><b>NOTIFY_FROM</b> — the address they are sent from,
+              on a domain verified with Resend</li>
+            <li><b>NOTIFY_TO</b> — who receives them, separated by commas</li>
+          </ul>
+          {state.missing && state.missing.length > 0 && (
+            <div style={{ fontFamily: mono, fontSize: 11.5, color: C.orange }}>
+              Still missing: {state.missing.join(", ")}
+            </div>
+          )}
+        </div>
+      )}
     </Panel>
   );
 }
