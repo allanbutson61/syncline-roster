@@ -1,13 +1,11 @@
 /* ============================================================
    read-travel
 
-   Reads an FMG travel email or PDF and returns the movements
-   as JSON.
+   Reads an FMG travel itinerary or email and returns the
+   movements as JSON.
 
-   The API key stays here on the server and is never sent to the
-   browser. Set it in Netlify under:
-     Site configuration -> Environment variables -> ANTHROPIC_API_KEY
-   Then redeploy.
+   The API key stays on the server. Set ANTHROPIC_API_KEY in
+   Netlify under Site configuration -> Environment variables.
    ============================================================ */
 
 const INSTRUCTION = [
@@ -17,23 +15,30 @@ const INSTRUCTION = [
   "Each element must be:",
   '{"name": string, "date": "YYYY-MM-DD", "direction": "IN" or "OUT",',
   '"period": "AM" or "PM", "mode": "FLY" or "DRIVE", "flight": string or null,',
-  '"confirmed": true or false}',
+  '"confirmed": true or false, "status": string or null}',
   "",
   "Rules:",
   "1. DATES ARE AUSTRALIAN: day/month/year. 02/12/2026 is 2 December 2026, NOT 12 February.",
   "   Always return the date as YYYY-MM-DD.",
-  "2. The person's name may appear only once, often in a Description or Subject line",
-  "   (for example 'Reschedule, Colin RADONICH'). Apply that name to every movement in",
-  "   the message unless a different name is clearly given for a particular movement.",
-  "3. IN means travelling to site. OUT means travelling home.",
-  "4. AM or PM comes from the DEPARTURE time of that leg. 0600 is AM, 1430 is PM.",
+  "2. The person's name may appear only once, often in a heading such as",
+  "   'For: Sarah CAIRD (815798)' or a Description line like 'Reschedule, Colin RADONICH'.",
+  "   Apply that name to every movement unless a different name is clearly given for one.",
+  "3. DIRECTION comes from the airports. The site codes are WHB, ELI and similar remote",
+  "   codes. The home ports are cities: PER Perth, BME Broome, KTA Karratha, GET Geraldton,",
+  "   BQB Busselton. Departing a city and arriving at the site is IN. Departing the site and",
+  "   arriving at a city is OUT. If there are no airport codes, work it out from the wording.",
+  "4. AM or PM comes from the DEPARTURE time (ETD) of that leg. 0600 is AM, 1500 is PM.",
   "   If no time is given, use AM for IN and PM for OUT.",
-  "5. Accommodation lines are NOT movements. Ignore anything describing a camp or village",
-  "   stay, such as 'Flying Fish (FF) from 02/12/2026 to 16/12/2026'. Only actual flights",
-  "   or drives count.",
+  "5. Accommodation is NOT a movement. Ignore any table of lodge or camp nights, such as",
+  "   'First Night / Last Night / Lodge / Room Type', or lines like",
+  "   'Flying Fish (FF) from 02/12/2026 to 16/12/2026'. Only flights and drives count.",
   "6. Mode is FLY for a plane or flight number, DRIVE for a vehicle or self drive.",
-  "7. confirmed is true when the line says confirmed, ticketed or issued. It is false when",
-  "   it says waitlisted, pending, requested or to be confirmed.",
+  "7. Copy the booking status word into 'status' exactly as written - for example",
+  "   'Confirmed', 'OverBooked', 'Waitlisted', 'Requested'.",
+  "   Set confirmed:true when the itinerary shows the seat as held by the travel provider,",
+  "   which includes 'Confirmed', 'OverBooked' and 'Ticketed'.",
+  "   Set confirmed:false only when it is still pending, such as 'Requested',",
+  "   'To be confirmed', 'TBC' or 'Waitlisted'.",
   "8. Put the flight number in 'flight' when there is one, for example QF2920.",
   "9. If there are no movements, return [].",
 ].join("\n");
@@ -73,7 +78,7 @@ export default async (request) => {
       },
       body: JSON.stringify({
         model: "claude-sonnet-5",
-        max_tokens: 2000,
+        max_tokens: 3000,
         messages: [{ role: "user", content }],
       }),
     });
@@ -83,9 +88,6 @@ export default async (request) => {
       console.error("Anthropic API error", res.status, detail);
       if (res.status === 401) {
         return json({ error: "The API key was rejected. Check ANTHROPIC_API_KEY in Netlify - no spaces or line breaks, starts with sk-ant- - then redeploy." }, 502);
-      }
-      if (res.status === 400 && detail.includes("model")) {
-        return json({ error: "That model name is not available on this account. Tell Claude and it will change it." }, 502);
       }
       if (res.status === 429) {
         return json({ error: "Rate limited or out of credit on the Anthropic account. Try again shortly or top up." }, 502);
