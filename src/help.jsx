@@ -327,6 +327,30 @@ const SECTIONS = [
     ),
   },
   {
+    id: "flights", title: "The flight schedule",
+    body: (
+      <>
+        <P>The <b>Flights</b> tab holds FMG's weekly schedule — what runs in and out of Eliwana on
+          each day, morning and afternoon.</P>
+        <P>The roster checks every movement against it. Ask for something that does not run and it
+          tells you so, says what does run that day, and when the next flight of that kind is. For
+          example, asking for an afternoon departure on a Monday gets:</P>
+        <div style={{ border: `1px solid ${C.red}`, background: "#FCEAE7", padding: "10px 12px",
+          margin: "0 0 12px", fontSize: 12.5, lineHeight: 1.55 }}>
+          There is no afternoon flight out on a Monday. Monday has QF2921 ELIWANA 0900 → PERTH 1050.
+          The next afternoon flight out is Tuesday — QF2923 ELIWANA 1505 → PERTH 1655.
+        </div>
+        <P>The warning appears wherever travel is entered: changing a cell, raising a travel change
+          request, entering travel by hand, and on the checking table when an FMG email is read in.
+          Anything already on the roster that does not match shows up under Roster checks.</P>
+        <P><b>Worth knowing:</b> there are no flights at all on a Saturday or Sunday, no flight in on
+          a Monday or Tuesday afternoon, and no morning flight either way on a Friday.</P>
+        <P>When FMG change the schedule, one file is updated and everyone sees the new one — send the
+          new schedule to Allan.</P>
+      </>
+    ),
+  },
+  {
     id: "checks", title: "Roster checks and alerts",
     body: (
       <>

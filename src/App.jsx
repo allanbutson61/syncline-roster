@@ -2,6 +2,7 @@ import React, { useState, useMemo, useRef, useEffect, useCallback } from "react"
 import { loadRoster, saveRoster, STORAGE_MODE, onRemoteChange, forgetCache } from "./storage.js";
 import { CONFIGURED, currentProfile, onAuthChange, signOut } from "./supabase.js";
 import SignIn from "./signin.jsx";
+import { FLIGHTS, DAY_NAMES, flightsOn, describeFlight, weeklySummary, siteFlights } from "./flights.js";
 import { PEOPLE, OVERRIDES, NOSHOWS } from "./seed.js";
 import Help from "./help.jsx";
 import LOGO from "./logo.js";
@@ -255,6 +256,70 @@ function patternCode(emp, iso) {
   return base;
 }
 
+/* ---------- IS THERE A FLIGHT? ----------
+   Checks a travel movement against FMG's weekly schedule and, when
+   there isn't one, says what there is instead and when the next one
+   of that kind runs.                                                */
+
+function flightAdvice(iso, code) {
+  const meta = CODES[code];
+  if (!meta || !meta.movement) return null;
+  const mv = meta.movement;
+  if (mv.startsWith("D")) return null;                 /* driving needs no flight */
+  if (mv === "DT") return null;                        /* handled as its two legs */
+
+  const dir = meta.dir;
+  const period = mv.endsWith("A") ? "AM" : "PM";
+  const dayOfWeek = dow(iso);
+  if (flightsOn(dayOfWeek, dir, period).length) return null;
+
+  const word = dir === "IN" ? "in" : "out";
+  const half = period === "AM" ? "morning" : "afternoon";
+  const dayName = DAY_NAMES[dayOfWeek];
+  const sameDay = flightsOn(dayOfWeek, dir);
+
+  let msg;
+  if (!sameDay.length) {
+    msg = `There are no flights ${word} of Eliwana on a ${dayName} at all.`;
+  } else {
+    const other = sameDay.map(describeFlight).join("; ");
+    msg = `There is no ${half} flight ${word} on a ${dayName}. ${dayName} has ${other}.`;
+  }
+
+  /* when is the next one of the kind they asked for? */
+  for (let i = 1; i <= 7; i++) {
+    const d = addDays(iso, i);
+    const found = flightsOn(dow(d), dir, period);
+    if (found.length) {
+      msg += ` The next ${half} flight ${word} is ${DAY_NAMES[dow(d)]} ${fmtShort(d)} — ${describeFlight(found[0])}.`;
+      break;
+    }
+  }
+  return msg;
+}
+
+/* a day trip needs a flight in and a flight out on the same day */
+function dayTripAdvice(iso) {
+  const dayOfWeek = dow(iso);
+  const ins = flightsOn(dayOfWeek, "IN");
+  const outs = flightsOn(dayOfWeek, "OUT");
+  if (!ins.length && !outs.length)
+    return `There are no flights at all on a ${DAY_NAMES[dayOfWeek]}, so a day trip is not possible.`;
+  if (!ins.length) return `There is no flight in on a ${DAY_NAMES[dayOfWeek]}, so a day trip is not possible.`;
+  if (!outs.length) return `There is no flight out on a ${DAY_NAMES[dayOfWeek]}, so a day trip is not possible.`;
+  const firstIn = ins[0], lastOut = outs[outs.length - 1];
+  if (lastOut.depart <= firstIn.arrive)
+    return `On a ${DAY_NAMES[dayOfWeek]} the last flight out (${describeFlight(lastOut)}) leaves before the first flight in arrives (${describeFlight(firstIn)}).`;
+  return null;
+}
+
+function travelAdvice(iso, code) {
+  const meta = CODES[code];
+  if (!meta || !meta.movement) return null;
+  if (meta.movement === "DT") return dayTripAdvice(iso);
+  return flightAdvice(iso, code);
+}
+
 /* ---------- METRICS ---------- */
 
 const METRICS = [
@@ -297,6 +362,9 @@ function checkEmployee(emp, codeFor, dates) {
   seq.forEach(({ iso, code }, i) => {
     const dir = dirOf(code);
     const work = isWorkDay(code);
+
+    const advice = travelAdvice(iso, code);
+    if (advice) flag(iso, `${codeText(code)} on ${fmtShort(iso)} — ${advice}`, "warning");
 
     /* a day trip starts and finishes on the same day — it neither opens
        nor closes a swing, and it needs no work days either side */
@@ -766,6 +834,8 @@ function Roster({ profile }) {
   const setCell = useCallback((empId, iso, code, why, opts) => {
     if (opts && opts.validate) {
       const probs = problemsFromChange(empId, iso, code);
+      const advice = code === "__clear" ? null : travelAdvice(iso, code);
+      if (advice) probs.unshift({ iso, msg: advice, sev: "critical", flights: true });
       if (probs.length) {
         setConfirm({ empId, iso, code, why, probs,
           emp: employees.find((e) => e.id === empId) });
@@ -1222,7 +1292,8 @@ function Roster({ profile }) {
 
   const tabs = [["dash","Dashboard"],["grid","Roster"],["leave","Leave"],["travel","Travel"],
     ["requests", pendingRequests ? `Requests (${pendingRequests})` : "Requests"],
-    ["people","People"],["histogram","Histogram"],["noshow","No shows"],["audit","Change log"],["help","Guide"]];
+    ["people","People"],["flights","Flights"],["histogram","Histogram"],["noshow","No shows"],
+    ["audit","Change log"],["help","Guide"]];
 
   return (
     <div style={{ background: C.page, color: C.ink, fontFamily: sans, minHeight: "100vh" }}
@@ -1331,6 +1402,7 @@ function Roster({ profile }) {
         {view === "people" && <People {...{ employees, updateEmployee, changePattern,
           removePatternSegment, thresholds, setThresholds, focusDate, addPerson,
           customPatterns, savePattern, deletePattern, loadImported, isAdmin, requireAdmin }} />}
+        {view === "flights" && <Flights />}
         {view === "histogram" && <Histogram {...{ daily, dayIndex, focusDate, thresholds }} />}
         {view === "noshow" && <NoShow {...{ employees, noShows, addNoShow, removeNoShow }} />}
         {view === "audit" && <Audit {...{ log }} />}
@@ -2109,8 +2181,10 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
         const st = m.status || "";
         const state = /wait/i.test(st) ? "waitlisted"
           : m.confirmed === false ? "requested" : "confirmed";
+        const mvf = movementFrom(m);
         return { key: i, raw: m.name, empId: emp ? emp.id : "", date: m.date || "",
-          movement: movementFrom(m), state, flight: m.flight || "", status: st, use: !!emp };
+          movement: mvf, state, flight: m.flight || "", status: st, use: !!emp,
+          advice: m.date ? travelAdvice(m.date, travelCode(mvf, state)) : null };
       });
 
       /* FMG sometimes list two seats on the same leg — one held, one waitlisted.
@@ -2327,6 +2401,8 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
                       color: /over|wait|pend/i.test(r.status) ? C.orange : C.dim }}>
                       {r.status || "—"}
                       {r.dup && <div style={{ color: C.orange, fontSize: 10, marginTop: 2 }}>{r.dup}</div>}
+                      {r.advice && <div style={{ color: C.red, fontSize: 10, marginTop: 2,
+                        whiteSpace: "normal", maxWidth: 260, lineHeight: 1.4 }}>{r.advice}</div>}
                     </td>
                   </tr>
                 ))}
@@ -2401,6 +2477,15 @@ function ManualTravel({ employees, setCell, setTravel, user }) {
         </Field>
         <Field label="Flight"><input value={flight} onChange={(e) => setFlight(e.target.value)} style={{ width: "100%" }} /></Field>
       </div>
+      {(() => {
+        const advice = travelAdvice(date, travelCode(mv, state));
+        return advice ? (
+          <div style={{ border: `1px solid ${C.red}`, background: "#FCEAE7", padding: "9px 12px",
+            marginBottom: 12, fontSize: 12.5, lineHeight: 1.55 }}>
+            <b style={{ color: C.red }}>No such flight.</b> {advice}
+          </div>
+        ) : null;
+      })()}
       <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
         <Btn primary onClick={apply}>Apply</Btn>
         <Chip code={travelCode(mv, state)} />
@@ -2421,10 +2506,16 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
 
   const emp = employees.find((e) => e.id === Number(empId));
   const setChange = (i, patch) => setChanges((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
-  const problems = useMemo(
-    () => problemsFromChanges(Number(empId), changes.filter((c) => c.date)),
-    [empId, changes, problemsFromChanges]
-  );
+  const problems = useMemo(() => {
+    const rows = changes.filter((c) => c.date);
+    const out = [];
+    rows.forEach((c) => {
+      if (c.movement === "__cancel") return;
+      const advice = travelAdvice(c.date, travelCode(c.movement, "requested"));
+      if (advice) out.push({ iso: c.date, msg: `${c.movement} on ${fmtShort(c.date)} — ${advice}` });
+    });
+    return out.concat(problemsFromChanges(Number(empId), rows));
+  }, [empId, changes, problemsFromChanges]);
 
   const submit = () => {
     const clean = changes.filter((c) => c.date).sort((a, b) => (a.date < b.date ? -1 : 1));
@@ -3087,6 +3178,105 @@ function AddPerson({ employees, addPerson, focusDate }) {
         supervisors and project managers. All three can be changed in the table below.
       </div>
     </Panel>
+  );
+}
+
+/* ============================================================
+   FLIGHT SCHEDULE
+   ============================================================ */
+
+function Flights() {
+  const week = weeklySummary();
+  const th = { textAlign: "left", padding: "7px 10px", fontFamily: disp, fontSize: 11.5,
+    letterSpacing: ".1em", color: "#FFF", textTransform: "uppercase", background: C.red,
+    whiteSpace: "nowrap" };
+  const td = { padding: "7px 10px", borderBottom: `1px solid ${C.line}`, fontSize: 12.5,
+    verticalAlign: "top", lineHeight: 1.5 };
+
+  const cell = (list) => list.length
+    ? list.map((f) => (
+        <div key={f.flight + f.depart} style={{ fontFamily: mono, fontSize: 11, marginBottom: 2 }}>
+          <span style={{ fontWeight: 600 }}>{f.flight}</span>{" "}
+          <span style={{ color: C.dim }}>{f.from} {f.depart} → {f.to} {f.arrive}</span>
+        </div>
+      ))
+    : <span style={{ fontFamily: mono, fontSize: 11, color: C.dimmer }}>—</span>;
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <Panel title="What runs when" note="the weekly pattern, in and out of Eliwana">
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 900 }}>
+            <thead><tr>
+              <th style={th}>Day</th>
+              <th style={th}>In — morning</th><th style={th}>In — afternoon</th>
+              <th style={th}>Out — morning</th><th style={th}>Out — afternoon</th>
+            </tr></thead>
+            <tbody>
+              {week.map((d) => {
+                const none = !d.inAM.length && !d.inPM.length && !d.outAM.length && !d.outPM.length;
+                return (
+                  <tr key={d.day} style={{ background: none ? "#F7F1EE" : (d.day % 2 ? C.panel2 : "#FFF") }}>
+                    <td style={{ ...td, fontWeight: 600, whiteSpace: "nowrap",
+                      color: none ? C.dimmer : C.ink }}>
+                      {d.name}
+                      {none && <div style={{ fontFamily: mono, fontSize: 10, color: C.red,
+                        fontWeight: 400 }}>no flights</div>}
+                    </td>
+                    <td style={td}>{cell(d.inAM)}</td>
+                    <td style={td}>{cell(d.inPM)}</td>
+                    <td style={td}>{cell(d.outAM)}</td>
+                    <td style={td}>{cell(d.outPM)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 12, lineHeight: 1.6 }}>
+          A departure before midday counts as morning, from midday on as afternoon. The roster uses
+          this to check every flight you enter — if you ask for a movement on a day it does not run,
+          it says so and tells you when the next one is.
+        </div>
+      </Panel>
+
+      <Panel title="Every leg" note="including the positioning legs that do not carry crew to site" pad={0}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", minWidth: 780 }}>
+            <thead><tr>
+              <th style={th}>Day</th><th style={th}>Flight</th><th style={th}>Aircraft</th>
+              <th style={th}>Depart</th><th style={th}>Arrive</th><th style={th}>Check in</th>
+              <th style={th}></th>
+            </tr></thead>
+            <tbody>
+              {["IN", "OUT"].map((dir) => FLIGHTS.filter((f) => f.dir === dir)
+                .map((f, i) => (
+                  <tr key={dir + i} style={{ background: i % 2 ? C.panel2 : "#FFF",
+                    opacity: f.positioning ? 0.6 : 1 }}>
+                    <td style={{ ...td, whiteSpace: "nowrap" }}>{DAY_NAMES[f.day]}</td>
+                    <td style={{ ...td, fontFamily: mono, fontSize: 11.5, fontWeight: 600 }}>{f.flight}</td>
+                    <td style={{ ...td, fontFamily: mono, fontSize: 11, color: C.dim }}>{f.aircraft}</td>
+                    <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{f.from} {f.depart}</td>
+                    <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{f.to} {f.arrive}</td>
+                    <td style={{ ...td, fontFamily: mono, fontSize: 11, color: C.dim }}>{f.checkIn}</td>
+                    <td style={{ ...td, fontFamily: mono, fontSize: 10 }}>
+                      <span style={{ color: dir === "IN" ? "#22447B" : "#8A4A1F" }}>
+                        {dir === "IN" ? "IN" : "OUT"}</span>
+                      {f.positioning && <span style={{ color: C.dimmer }}> · positioning</span>}
+                    </td>
+                  </tr>
+                )))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ padding: "10px 14px", fontFamily: mono, fontSize: 10.5, color: C.dim,
+          lineHeight: 1.6 }}>
+          Positioning legs — Karratha to Port Hedland, Busselton to Solomon, Busselton to Perth —
+          are shown for completeness. They do not put anyone on or off site, so the roster ignores them.
+          <br />When FMG change the schedule, the file to update is src/flights.js.
+        </div>
+      </Panel>
+    </div>
   );
 }
 
