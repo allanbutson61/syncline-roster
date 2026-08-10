@@ -3,7 +3,7 @@ import { loadRoster, saveRoster, STORAGE_MODE, onRemoteChange, forgetCache } fro
 import { CONFIGURED, currentProfile, onAuthChange, signOut } from "./supabase.js";
 import SignIn from "./signin.jsx";
 import { FLIGHTS, DAY_NAMES, flightsOn, describeFlight, weeklySummary, siteFlights } from "./flights.js";
-import { PEOPLE, OVERRIDES, NOSHOWS } from "./seed.js";
+import { PEOPLE, OVERRIDES, NOSHOWS, LEAVE } from "./seed.js";
 import Help from "./help.jsx";
 import LOGO from "./logo.js";
 
@@ -189,8 +189,8 @@ const CATEGORIES = ["Operator", "Leading Hand", "Supervisor", "Project Manager",
 const USERS = ["Jaki Soutar", "Kiteesha", "Kylie Turner", "Wes Clack", "Greg Jozwicki", "Donna Matiu", "Allan Butson"];
 const ADMINS = ["Jaki Soutar", "Kiteesha", "Kylie Turner"];
 
-const HORIZON_START = "2026-07-01";
-const HORIZON_DAYS = 400;
+const HORIZON_START = "2026-01-01";
+const HORIZON_DAYS = 640;
 
 /* ---------- DATES ---------- */
 
@@ -606,7 +606,7 @@ function Roster({ profile }) {
 
   const [employees, setEmployees] = useState(buildEmployees);
   const [overrides, setOverrides] = useState(buildOverrides);
-  const [leaveRecords, setLeaveRecords] = useState([]);
+  const [leaveRecords, setLeaveRecords] = useState(() => LEAVE.slice());
   const [travel, setTravel] = useState([]);
   const [requests, setRequests] = useState([]);
   const [actions, setActions] = useState([]);
@@ -616,8 +616,12 @@ function Roster({ profile }) {
   const [user, setUser] = useState(profile ? profile.name : "");
   const isAdmin = !profile || profile.role === "admin";
   const [view, setView] = useState("dash");
-  const [focusDate, setFocusDate] = useState("2026-07-29");
-  const [gridStart, setGridStart] = useState("2026-07-27");
+  const startOn = (() => {
+    const t = toISO(new Date());
+    return t < DATES[0] ? DATES[0] : t > DATES[DATES.length - 1] ? DATES[DATES.length - 1] : t;
+  })();
+  const [focusDate, setFocusDate] = useState(startOn);
+  const [gridStart, setGridStart] = useState(addDays(startOn, -5));
   const [gridDays, setGridDays] = useState(28);
   const [cellW, setCellW] = useState(34);
   const [brush, setBrush] = useState("__select");
@@ -1128,7 +1132,7 @@ function Roster({ profile }) {
     setEmployees(buildEmployees());
     setOverrides(buildOverrides());
     setNoShows(NOSHOWS.slice());
-    setLeaveRecords([]); setTravel([]); setRequests([]); setActions([]);
+    setLeaveRecords(LEAVE.slice()); setTravel([]); setRequests([]); setActions([]);
     setDismissed({}); setUndoStack([]);
     record({ kind: "person", empId: 0, name: "—", date: "—", from: "saved roster",
       to: "imported roster", why: "reloaded from the Excel workbook" });
