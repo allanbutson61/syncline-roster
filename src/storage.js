@@ -170,6 +170,14 @@ async function saveShared(snapshot) {
       updated_at: new Date().toISOString() }));
   if (peopleUp.length) jobs.push(supabase.from("people").upsert(peopleUp));
 
+  /* Anyone no longer on the list is removed, so a reseed with fewer people
+     does not leave the ones who have gone sitting in the database. */
+  const keepIds = (snapshot.employees || []).map((e) => e.id);
+  if (keepIds.length) {
+    jobs.push(supabase.from("people").delete()
+      .not("id", "in", `(${keepIds.join(",")})`));
+  }
+
   /* --- leave, travel, requests, actions, no shows, change log --- */
   Object.keys(RECORD_KINDS).forEach((field) => {
     const kind = RECORD_KINDS[field];

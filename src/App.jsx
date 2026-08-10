@@ -664,11 +664,13 @@ function Roster({ profile }) {
     try {
       const d = await loadRoster();
       if (d) {
-        /* an empty list means the personnel have not been written yet —
-           keep the seeded ones rather than showing an empty People tab */
+        /* An empty list means it has not been written yet — keep the seeded
+           ones rather than blanking the tab. Applies to the three that are
+           seeded from the spreadsheet; the rest start empty legitimately. */
         if (d.employees && d.employees.length) setEmployees(d.employees);
         if (d.overrides) setOverrides(d.overrides);
-        if (d.leaveRecords) setLeaveRecords(d.leaveRecords);
+        if (d.leaveRecords && d.leaveRecords.length) setLeaveRecords(d.leaveRecords);
+        if (d.noShows && d.noShows.length) setNoShows(d.noShows);
         if (d.travel) setTravel(d.travel);
         if (d.requests) setRequests(d.requests);
         if (d.actions) setActions(d.actions);
@@ -676,7 +678,6 @@ function Roster({ profile }) {
         if (d.thresholds) setThresholds(d.thresholds);
         if (d.dismissed) setDismissed(d.dismissed);
         if (d.customPatterns) setCustomPatterns_(d.customPatterns);
-        if (d.noShows) setNoShows(d.noShows);
         if (d.watch) setWatch(d.watch);
         setSync({ state: "ok", at: d.savedAt, by: d.savedBy });
       } else setSync({ state: "empty", at: null, by: null });
@@ -709,13 +710,18 @@ function Roster({ profile }) {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       setSync((s) => ({ ...s, state: "saving" }));
-      savingUntil.current = Date.now() + 2500;
+      /* A first save writes thousands of rows and can run for a while. Hold the
+         echo window open for the whole of it, and for a moment afterwards, so a
+         reload triggered by our own writes cannot land mid-save. */
+      savingUntil.current = Date.now() + 60000;
       try {
         const snap = snapshot();
         const ok = await saveRoster(snap);
+        savingUntil.current = Date.now() + 3000;
         if (!ok) throw new Error("save failed");
         setSync({ state: "ok", at: snap.savedAt, by: snap.savedBy });
       } catch {
+        savingUntil.current = Date.now() + 3000;
         setSync((s) => ({ ...s, state: "error" }));
       }
     }, 900);
@@ -1129,8 +1135,25 @@ function Roster({ profile }) {
   const loadImported = () => {
     if (!requireAdmin()) return;
     forgetCache();
-    setEmployees(buildEmployees());
-    setOverrides(buildOverrides());
+    /* People added here since the last import are not in the spreadsheet, so
+       reseeding must not remove them. Keep them, renumbered after the seeded
+       list, along with any roster days entered against them. */
+    const seeded = buildEmployees();
+    const seededNames = new Set(seeded.map((e) => e.name.trim().toLowerCase()));
+    const extra = employees.filter((e) => !seededNames.has((e.name || "").trim().toLowerCase()));
+    const remap = {};
+    let nextId = Math.max(0, ...seeded.map((e) => e.id));
+    const kept = extra.map((e) => { nextId += 1; remap[e.id] = nextId; return { ...e, id: nextId }; });
+
+    const base = buildOverrides();
+    Object.keys(overrides).forEach((k) => {
+      const bar = k.indexOf("|");
+      const id = Number(k.slice(0, bar));
+      if (remap[id]) base[remap[id] + "|" + k.slice(bar + 1)] = overrides[k];
+    });
+
+    setEmployees([...seeded, ...kept]);
+    setOverrides(base);
     setNoShows(NOSHOWS.slice());
     setLeaveRecords(LEAVE.slice()); setTravel([]); setRequests([]); setActions([]);
     setDismissed({}); setUndoStack([]);
@@ -2819,9 +2842,12 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
         ) : (
           <div style={{ border: `1px solid ${C.red}`, background: "#FCEAE7", padding: "12px 14px" }}>
             <div style={{ fontSize: 13, marginBottom: 10, lineHeight: 1.55 }}>
-              This replaces everything on screen with the roster and personnel register taken from the
-              spreadsheet. Leave entries, travel records, requests and dismissed checks made in here are
-              cleared. The change log is kept.
+              This replaces the roster and personnel register with the ones taken from the spreadsheet.
+              Travel records, requests and dismissed checks made in here are cleared, and leave goes
+              back to what the spreadsheet says. The change log is kept.
+              <div style={{ marginTop: 8 }}>
+                Anyone added here who is not in the spreadsheet is kept, along with their roster days.
+              </div>
             </div>
             <div style={{ display: "flex", gap: 10 }}>
               <Btn primary onClick={() => { loadImported(); setConfirmImport(false); }}>
