@@ -1896,6 +1896,22 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
           flight: m.flight || "", status: m.status || "", use: !!emp };
       });
 
+      /* FMG sometimes list two seats on the same leg — one held, one waitlisted.
+         Keep the confirmed one and leave the other unticked with a note. */
+      mapped.forEach((r) => {
+        if (!r.empId) return;
+        const same = mapped.filter((x) => x.empId === r.empId && x.date === r.date
+          && MOVEMENTS[x.movement] && MOVEMENTS[r.movement]
+          && MOVEMENTS[x.movement].dir === MOVEMENTS[r.movement].dir);
+        if (same.length < 2) return;
+        const best = same.find((x) => x.state === "confirmed") || same[0];
+        same.forEach((x) => {
+          if (x === best) return;
+          x.use = false;
+          x.dup = `duplicate leg — ${best.flight || best.movement} is the one held`;
+        });
+      });
+
       /* someone flying in and back out on the same day is a day trip */
       const collapsed = [];
       mapped.forEach((r) => {
@@ -2010,7 +2026,8 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
               </tr></thead>
               <tbody>
                 {rows.map((r, i) => (
-                  <tr key={r.key} style={{ background: r.empId ? "transparent" : "#FCEAE7" }}>
+                  <tr key={r.key} style={{ background: !r.empId ? "#FCEAE7"
+                    : r.dup ? "#FDF4EE" : "transparent" }}>
                     <td style={td}>
                       <input type="checkbox" checked={r.use} disabled={!r.empId}
                         onChange={(e) => setRows((rs) => rs.map((x, j) => j === i ? { ...x, use: e.target.checked } : x))}
@@ -2047,7 +2064,9 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
                     <td style={{ ...td, fontFamily: mono, fontSize: 11, color: C.dim }}>{r.flight || "—"}</td>
                     <td style={{ ...td, fontFamily: mono, fontSize: 10.5,
                       color: /over|wait|pend/i.test(r.status) ? C.orange : C.dim }}>
-                      {r.status || "—"}</td>
+                      {r.status || "—"}
+                      {r.dup && <div style={{ color: C.orange, fontSize: 10, marginTop: 2 }}>{r.dup}</div>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -2850,11 +2869,11 @@ function Histogram({ daily, dayIndex, focusDate, thresholds }) {
       ["", "Operator Manning", ...ratios.map((x) => x.toFixed(3))],
       [],
       ["Averages over the period"],
-      ["Average operators on day shift", avgOpsDay.toFixed(2)],
-      ["Average operators on night shift", avgOpsNight.toFixed(2)],
-      ["Average operators on site", avgOpsAll.toFixed(2)],
-      ["Average total on site", avgOnSite.toFixed(2)],
-      ["Average manning ratio", `${avg.toFixed(4)} (average operators divided by the target of ${target})`],
+      ["Average operators - day shift", avgOpsDay.toFixed(4), "the day shift row, averaged"],
+      ["Average operators - night shift", avgOpsNight.toFixed(4), "the night shift row, averaged"],
+      ["Average operators - all shifts", avgOpsAll.toFixed(4), "day plus night"],
+      ["Average total on site", avgOnSite.toFixed(4), "all categories"],
+      ["Average manning ratio", avg.toFixed(4), `all operators divided by the target of ${target}`],
     ];
     downloadCsv(`manning-histogram-${from}-to-${to}.csv`, rows);
   };
@@ -2889,11 +2908,13 @@ function Histogram({ daily, dayIndex, focusDate, thresholds }) {
           only and is not added into the total.
         </div>
         <div style={{ display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginTop: 12 }}>
+          gridTemplateColumns: "repeat(auto-fit, minmax(148px, 1fr))", gap: 10, marginTop: 12 }}>
           {[
-            ["Average operators on site", avgOpsAll.toFixed(2), `${avgOpsDay.toFixed(2)} day · ${avgOpsNight.toFixed(2)} night`],
-            ["Average total on site", avgOnSite.toFixed(2), "all categories"],
-            ["Average manning ratio", avg.toFixed(3), `operators ÷ target of ${target}`],
+            ["Avg operators — day shift", avgOpsDay.toFixed(2), "the day shift row, averaged"],
+            ["Avg operators — night shift", avgOpsNight.toFixed(2), "the night shift row, averaged"],
+            ["Avg operators — all shifts", avgOpsAll.toFixed(2), "day plus night"],
+            ["Avg total on site", avgOnSite.toFixed(2), "all categories"],
+            ["Avg manning ratio", avg.toFixed(3), `all operators ÷ target of ${target}`],
             ["Days in the period", String(days.length), `${fmtShort(from)} – ${fmtShort(to)}`],
           ].map(([l, v, sub]) => (
             <div key={l} style={{ background: C.panel2, border: `1px solid ${C.line}`,
