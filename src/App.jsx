@@ -956,6 +956,7 @@ function Roster({ profile }) {
     setFocusDate(iso);
     setGridStart(addDays(iso, -5));
     if (empId) { setPicked([empId]); setSearch(""); setCrewFilter("All"); setCatFilter("All"); }
+    else setPicked([]);
     setView("grid");
   };
 
@@ -1338,8 +1339,11 @@ function Roster({ profile }) {
   const crews = ["All", ...Array.from(new Set(employees.map((e) => e.crew)))];
   const cats = ["All", ...Array.from(new Set(employees.map((e) => e.category)))];
   const sortedEmployees = employees.slice().sort(bySurname);
+  /* A pick can be left over from clicking a roster check, and ids change when the
+     roster is reimported. Anything that no longer matches a person is ignored. */
+  const livePicked = picked.filter((id) => employees.some((e) => e.id === id));
   const visibleEmployees = sortedEmployees.filter((e) => {
-    if (picked.length) return picked.includes(e.id);
+    if (livePicked.length) return livePicked.includes(e.id);
     if (crewFilter !== "All" && e.crew !== crewFilter) return false;
     if (catFilter !== "All" && e.category !== catFilter) return false;
     if (search.trim()) {
@@ -1806,7 +1810,10 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
           <Btn small active={showPicker} onClick={() => setShowPicker(!showPicker)}>
             {picked.length ? `Pick people (${picked.length})` : "Pick people"}
           </Btn>
-          {picked.length > 0 && <Btn small danger onClick={() => setPicked([])}>Clear selection</Btn>}
+          {(picked.length > 0 || search.trim() || crewFilter !== "All" || catFilter !== "All") && (
+            <Btn small danger onClick={() => { setPicked([]); setSearch("");
+              setCrewFilter("All"); setCatFilter("All"); }}>Show everyone</Btn>
+          )}
           <span style={{ fontFamily: mono, fontSize: 11, color: C.dim, marginLeft: "auto" }}>
             showing {visibleEmployees.length} of {employees.length}</span>
           <Btn primary onClick={() => {
@@ -1939,6 +1946,20 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
               );
             })}
           </div>
+
+          {visibleEmployees.length === 0 && (
+            <div style={{ padding: "22px 16px", borderTop: `1px solid ${C.line}` }}>
+              <div style={{ fontSize: 13.5, marginBottom: 10 }}>
+                <b>Nobody is showing</b> because of the filters above
+                {picked.length ? " — people have been picked from the list" : ""}
+                {search.trim() ? ` — the find box says "${search.trim()}"` : ""}
+                {crewFilter !== "All" ? ` — crew ${crewFilter} only` : ""}
+                {catFilter !== "All" ? ` — ${catFilter} only` : ""}.
+              </div>
+              <Btn primary onClick={() => { setPicked([]); setSearch("");
+                setCrewFilter("All"); setCatFilter("All"); }}>Show everyone</Btn>
+            </div>
+          )}
 
           {visibleEmployees.map((emp, ri) => {
             const seg = segmentFor(emp, focusDate);
