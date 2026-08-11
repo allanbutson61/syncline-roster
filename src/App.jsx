@@ -208,6 +208,9 @@ const nowStamp = () => new Date().toISOString();
 const fmtStamp = (s) => { const d = new Date(s);
   return `${String(d.getDate()).padStart(2,"0")} ${MON[d.getMonth()]} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
 const DATES = Array.from({ length: HORIZON_DAYS }, (_, i) => addDays(HORIZON_START, i));
+const bySurname = (a, b) => (a.name || "").localeCompare((b.name || ""), "en",
+  { sensitivity: "base" });
+
 const rangeDays = (from, to) => { const out = []; for (let d = from; d <= to && out.length < 400; d = addDays(d, 1)) out.push(d); return out; };
 
 /* ---------- PATTERN ENGINE ----------
@@ -1311,6 +1314,22 @@ function Roster({ profile }) {
       ? { ...a, done: true, doneBy: user || "unsigned", doneAt: nowStamp() } : a));
   };
 
+  const removeTravel = (id) => {
+    if (!requireUser()) return;
+    const t = travel.find((x) => x.id === id);
+    if (!t) return;
+    setCell(t.empId, t.date, "__clear", "travel removed");
+    setTravel((ts) => ts.filter((x) => x.id !== id));
+  };
+
+  const removeRequest = (reqId) => {
+    if (!requireUser()) return;
+    const r = requests.find((x) => x.id === reqId);
+    setRequests((rs) => rs.filter((x) => x.id !== reqId));
+    if (r) record({ kind: "request", empId: r.empId, name: r.name, date: "—",
+      from: r.status, to: "removed", why: "request removed from the list" });
+  };
+
   const declineRequest = (reqId) => {
     setRequests((rs) => rs.map((r) => r.id === reqId
       ? { ...r, status: "declined", actionedBy: user || "unsigned", actionedAt: nowStamp() } : r));
@@ -1318,7 +1337,8 @@ function Roster({ profile }) {
 
   const crews = ["All", ...Array.from(new Set(employees.map((e) => e.crew)))];
   const cats = ["All", ...Array.from(new Set(employees.map((e) => e.category)))];
-  const visibleEmployees = employees.filter((e) => {
+  const sortedEmployees = employees.slice().sort(bySurname);
+  const visibleEmployees = sortedEmployees.filter((e) => {
     if (picked.length) return picked.includes(e.id);
     if (crewFilter !== "All" && e.crew !== crewFilter) return false;
     if (catFilter !== "All" && e.category !== catFilter) return false;
@@ -1439,9 +1459,10 @@ function Roster({ profile }) {
           setSearch, picked, setPicked, focusDate, setFocusDate, overrides, menu, setMenu, anomalies }} />}
         {view === "leave" && <Leave {...{ employees, leaveRecords, addLeave, removeLeave, focusDate }} />}
         {view === "travel" && <Travel {...{ employees, travel, setTravel, setCell, actions, user,
-          applyTravelBatch, markActionDone, watch, employees, confirmWatch, clearWatch }} />}
+          applyTravelBatch, markActionDone, watch, employees, confirmWatch, clearWatch,
+          removeTravel }} />}
         {view === "requests" && <Requests {...{ employees, requests, submitRequest, markRequested,
-          declineRequest, codeFor, focusDate, problemsFromChanges }} />}
+          declineRequest, removeRequest, codeFor, focusDate, problemsFromChanges }} />}
         {view === "people" && <People {...{ employees, updateEmployee, changePattern,
           removePatternSegment, thresholds, setThresholds, focusDate, addPerson,
           customPatterns, savePattern, deletePattern, loadImported, isAdmin, requireAdmin,
@@ -1759,25 +1780,7 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
           <Btn small onClick={() => setGridStart(addDays(gridStart, -gridDays))}>◀</Btn>
           <Btn small onClick={() => setGridStart(addDays(gridStart, gridDays))}>▶</Btn>
           <Btn small onClick={() => setGridStart(addDays(focusDate, -3))}>Today</Btn>
-          <Btn small onClick={() => {
-            const head = ["Employee", "Crew", "Pattern", "Category", "Position"]
-              .concat(gridDates.map((d) => fmtShort(d)));
-            const rows = [
-              [`Syncline Haulage roster  ${fmtShort(gridDates[0])} to ${fmtShort(gridDates[gridDays - 1])}`],
-              [], head,
-            ];
-            visibleEmployees.forEach((emp) => {
-              const seg = segmentFor(emp, gridStart);
-              rows.push([emp.name, emp.crew, seg ? seg.pattern : "", emp.category, emp.position]
-                .concat(gridDates.map((d) => codeText(codeFor(emp, d)))));
-            });
-            rows.push([]);
-            rows.push(["Operators on site", "", "", "", ""]
-              .concat(gridDates.map((d) => (daily[dayIndex[d]] ? daily[dayIndex[d]].counts.ops : ""))));
-            rows.push(["Section 26 on site", "", "", "", ""]
-              .concat(gridDates.map((d) => (daily[dayIndex[d]] ? daily[dayIndex[d]].counts.s26 : ""))));
-            downloadCsv(`syncline-roster-${gridDates[0]}.csv`, rows);
-          }}>Export to Excel</Btn>
+
           <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>SIZE</span>
           <select value={cellW} onChange={(e) => setCellW(Number(e.target.value))}>
             <option value={40}>Large</option>
@@ -1806,12 +1809,31 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
           {picked.length > 0 && <Btn small danger onClick={() => setPicked([])}>Clear selection</Btn>}
           <span style={{ fontFamily: mono, fontSize: 11, color: C.dim, marginLeft: "auto" }}>
             showing {visibleEmployees.length} of {employees.length}</span>
+          <Btn primary onClick={() => {
+            const head = ["Employee", "Crew", "Pattern", "Category", "Position"]
+              .concat(gridDates.map((d) => fmtShort(d)));
+            const rows = [
+              [`Syncline Haulage roster  ${fmtShort(gridDates[0])} to ${fmtShort(gridDates[gridDays - 1])}`],
+              [], head,
+            ];
+            visibleEmployees.forEach((emp) => {
+              const seg = segmentFor(emp, gridStart);
+              rows.push([emp.name, emp.crew, seg ? seg.pattern : "", emp.category, emp.position]
+                .concat(gridDates.map((d) => codeText(codeFor(emp, d)))));
+            });
+            rows.push([]);
+            rows.push(["Operators on site", "", "", "", ""]
+              .concat(gridDates.map((d) => (daily[dayIndex[d]] ? daily[dayIndex[d]].counts.ops : ""))));
+            rows.push(["Section 26 on site", "", "", "", ""]
+              .concat(gridDates.map((d) => (daily[dayIndex[d]] ? daily[dayIndex[d]].counts.s26 : ""))));
+            downloadCsv(`syncline-roster-${gridDates[0]}.csv`, rows);
+          }}>Export to Excel</Btn>
         </div>
 
         {showPicker && (
           <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}`,
             display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 4 }}>
-            {employees.map((e) => (
+            {employees.slice().sort(bySurname).map((e) => (
               <label key={e.id} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12,
                 cursor: "pointer", padding: "2px 0" }}>
                 <input type="checkbox" checked={picked.includes(e.id)}
@@ -1935,9 +1957,14 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
                   </div>
                 </div>
                 {gridDates.map((iso) => {
-                  const preMobe = emp.mobeDate && iso < emp.mobeDate;
-                  const postDemob = emp.demobDate && iso > emp.demobDate;
                   const code = codeFor(emp, iso);
+                  /* A day set by hand shows even outside the mobilisation dates —
+                     medicals, inductions and training all happen before someone
+                     mobilises. Only untouched days are hatched. */
+                  const outside = (emp.mobeDate && iso < emp.mobeDate)
+                    || (emp.demobDate && iso > emp.demobDate);
+                  const preMobe = outside && !code;
+                  const postDemob = false;
                   const [bg, fg, br] = codeStyle(code);
                   const isOverride = (emp.id + "|" + iso) in overrides;
                   const st = travelState(code);
@@ -1952,8 +1979,8 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
                       }}
                       onMouseEnter={() => { if (painting && brush !== "__select") setCell(emp.id, iso, brush); }}
                       title={`${emp.name} · ${fmtLong(iso)} · ${preMobe ? "not yet mobilised"
-                        : postDemob ? "demobilised"
-                        : code ? (CODES[code] ? CODES[code].label : code) : "not rostered"}${
+                        : code ? (CODES[code] ? CODES[code].label : code)
+                        : outside ? "outside the mobilisation dates" : "not rostered"}${
                         wl ? "\nAlso waitlisted: " + (CODES[wl.code] ? CODES[wl.code].label : wl.code) : ""}${
                         anom ? " — " + anom.msg : ""}`}
                       style={{ width: CW, flex: `0 0 ${CW}px`, height: 30, color: fg,
@@ -2005,7 +2032,8 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
             {menu.emp.name}<br />{fmtLong(menu.iso)}
           </div>
           {[["1", "Day shift"], ["NS", "Night shift"], ["RR", "R & R"], ["AL", "Annual leave"],
-            ["SL", "Sick leave"], ["TR", "Training"]].map(([code, label]) => (
+            ["SL", "Sick leave"], ["TR", "Training course"], ["PEM", "Pre-employment medical"],
+            ["F2F", "Face to face induction"], ["CRS", "Course"]].map(([code, label]) => (
             <MenuItem key={code} code={code} label={label}
               onClick={() => { setCell(menu.emp.id, menu.iso, code, "roster edit", { validate: true }); setMenu(null); }} />
           ))}
@@ -2123,7 +2151,7 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate }) {
       <Panel title="Enter leave">
         <Field label="Employee">
           <select value={empId} onChange={(e) => setEmpId(e.target.value)} style={{ width: "100%" }}>
-            {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            {employees.slice().sort(bySurname).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
         </Field>
         <Field label="Leave type">
@@ -2246,7 +2274,7 @@ function movementFrom(m) {
 }
 
 function Travel({ employees, travel, setTravel, setCell, actions, user, applyTravelBatch,
-  markActionDone, watch, confirmWatch, clearWatch }) {
+  markActionDone, watch, confirmWatch, clearWatch, removeTravel }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -2490,7 +2518,7 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
                         onChange={(e) => setRows((rs) => rs.map((x, j) => j === i
                           ? { ...x, empId: e.target.value, use: !!e.target.value } : x))}>
                         <option value="">— no match, choose —</option>
-                        {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+                        {employees.slice().sort(bySurname).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
                       </select>
                     </td>
                     <td style={td}>
@@ -2543,10 +2571,17 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
             <div style={{ fontSize: 13, flex: 1 }}>{t.name}</div>
             <Chip code={t.code} />
             <div style={{ fontFamily: mono, fontSize: 11, color: C.dim, width: 70 }}>{t.flight || "—"}</div>
-            <div style={{ fontFamily: mono, fontSize: 10, color: C.dimmer, width: 130,
+            <div style={{ fontFamily: mono, fontSize: 10, color: C.dimmer, width: 120,
               overflow: "hidden", textOverflow: "ellipsis" }}>{t.source}</div>
+            <Btn small danger onClick={() => removeTravel(t.id)}>Remove</Btn>
           </div>
         ))}
+        {travel.length > 0 && (
+          <div style={{ padding: "9px 16px", fontFamily: mono, fontSize: 10.5, color: C.dim }}>
+            Remove puts that day back on the person's roster pattern and takes the movement off this
+            list. It does not cancel anything with FMG.
+          </div>
+        )}
       </Panel>
 
       <Btn small onClick={() => setManual(!manual)}>{manual ? "Hide" : "Show"} manual entry</Btn>
@@ -2575,7 +2610,7 @@ function ManualTravel({ employees, setCell, setTravel, user }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
         <Field label="Employee">
           <select value={empId} onChange={(e) => setEmpId(e.target.value)} style={{ width: "100%" }}>
-            {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            {employees.slice().sort(bySurname).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
           </select>
         </Field>
         <Field label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ width: "100%" }} /></Field>
@@ -2615,8 +2650,8 @@ function ManualTravel({ employees, setCell, setTravel, user }) {
    TRAVEL CHANGE REQUESTS
    ============================================================ */
 
-function Requests({ employees, requests, submitRequest, markRequested, declineRequest, codeFor,
-  focusDate, problemsFromChanges }) {
+function Requests({ employees, requests, submitRequest, markRequested, declineRequest,
+  removeRequest, codeFor, focusDate, problemsFromChanges }) {
   const [empId, setEmpId] = useState(employees[6] ? employees[6].id : 1);
   const [reason, setReason] = useState("");
   const [changes, setChanges] = useState([{ date: focusDate, movement: "FOP" }]);
@@ -2650,7 +2685,7 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
         <Panel title="Request a travel change" note="site crew">
           <Field label="Employee">
             <select value={empId} onChange={(e) => setEmpId(e.target.value)} style={{ width: "100%" }}>
-              {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+              {employees.slice().sort(bySurname).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
             </select>
           </Field>
           <Field label="Changes requested">
@@ -2749,6 +2784,7 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
               <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
                 <Btn primary onClick={() => markRequested(r.id)}>Mark as requested with travel team</Btn>
                 <Btn danger onClick={() => declineRequest(r.id)}>Decline</Btn>
+                <Btn danger onClick={() => removeRequest(r.id)}>Remove</Btn>
               </div>
             </div>
           );
@@ -2765,6 +2801,7 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
               <div style={{ fontFamily: mono, fontSize: 11, color: r.status === "declined" ? C.red : C.ok }}>
                 {r.status}</div>
               <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, width: 110 }}>{r.actionedBy}</div>
+              <Btn small danger onClick={() => removeRequest(r.id)}>Remove</Btn>
             </div>
           ))}
         </Panel>
@@ -2814,7 +2851,7 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
   const uniq = (key) => ["All", ...Array.from(new Set(employees
     .map((e) => (e[key] || "").trim()).filter(Boolean))).sort()];
 
-  const shownPeople = employees.filter((e) => {
+  const shownPeople = employees.slice().sort(bySurname).filter((e) => {
     if (pf.status === "Mobilised" && e.demobDate) return false;
     if (pf.status === "Demobilised" && !e.demobDate) return false;
     for (const k of ["category", "crew", "company", "contract", "poh"]) {
@@ -2849,7 +2886,7 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
         <Panel title="Change a roster pattern" note="from a date, rolls forward">
           <Field label="Employee">
             <select value={pEmp} onChange={(e) => setPEmp(e.target.value)} style={{ width: "100%" }}>
-              {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+              {employees.slice().sort(bySurname).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
             </select>
           </Field>
           <Field label="New pattern">
@@ -2984,7 +3021,7 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
           )}
         </div>
         <div style={{ padding: "8px 12px", borderBottom: `1px solid ${C.line}`, background: C.panel2 }}>
-          <Btn small onClick={() => downloadCsv("syncline-personnel.csv", [
+          <Btn primary onClick={() => downloadCsv("syncline-personnel.csv", [
             ["Name","Alias","SAP No","Category","Position","Crew","Pattern","Company","POH",
              "Contract Type","Gender","ATSI","Email","Mobile No","Mobe date","Demobe Date"],
             ...shownPeople.map((e) => {
@@ -3681,7 +3718,7 @@ function NoShow({ employees, noShows, addNoShow, removeNoShow }) {
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
           <Field label="Employee">
             <select value={f.empId} onChange={(e) => set("empId", e.target.value)} style={{ width: "100%" }}>
-              {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+              {employees.slice().sort(bySurname).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
             </select>
           </Field>
           <Field label="Date"><input type="date" value={f.date}
