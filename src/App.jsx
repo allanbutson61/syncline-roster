@@ -2916,19 +2916,31 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
             <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.line}` }}>
               <div style={{ fontFamily: disp, fontSize: 11.5, letterSpacing: ".12em", color: C.dim,
                 textTransform: "uppercase", marginBottom: 6 }}>{emp.name} — pattern history</div>
-              {(emp.patterns || []).map((s) => (
+              {(emp.patterns || []).map((s) => {
+                const running = segmentFor(emp, focusDate);
+                const isNow = running && running.from === s.from;
+                const later = s.from > focusDate;
+                return (
                 <div key={s.from} style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 12,
-                  padding: "4px 0", borderBottom: `1px solid ${C.line}` }}>
+                  padding: "4px 0", borderBottom: `1px solid ${C.line}`,
+                  background: isNow ? "#F5E3DA" : "transparent" }}>
                   <span style={{ fontFamily: mono, fontSize: 11, color: C.dim, width: 80 }}>
                     {s.from === "2000-01-01" ? "from start" : fmtShort(s.from)}</span>
-                  <span style={{ flex: 1 }}>{s.pattern}</span>
+                  <span style={{ flex: 1, fontWeight: isNow ? 600 : 400 }}>
+                    {s.pattern}
+                    {isNow && <span style={{ fontFamily: mono, fontSize: 10, color: C.red,
+                      marginLeft: 7 }}>running now</span>}
+                    {later && <span style={{ fontFamily: mono, fontSize: 10, color: C.orange,
+                      marginLeft: 7 }}>starts later</span>}
+                  </span>
                   <span style={{ fontFamily: mono, fontSize: 10.5, color: C.dimmer }}>
                     swing {fmtShort(s.anchor)}</span>
                   {(emp.patterns || []).length > 1 && s.from !== "2000-01-01" && (
                     <Btn small danger onClick={() => removePatternSegment(emp.id, s.from)}>×</Btn>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </Panel>
@@ -2991,7 +3003,7 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
       {isAdmin && <AddPerson employees={employees} addPerson={addPerson} focusDate={focusDate} />}
 
       <Panel title="Personnel"
-        note={`${shownPeople.length} of ${employees.length} · mobilisation dates drive the roster`} pad={0}>
+        note={`${shownPeople.length} of ${employees.length} · pattern shown is the one in force on ${fmtShort(focusDate)}`} pad={0}>
         <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.line}`, background: C.panel2,
           display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>FIND</span>
@@ -3022,12 +3034,17 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
         </div>
         <div style={{ padding: "8px 12px", borderBottom: `1px solid ${C.line}`, background: C.panel2 }}>
           <Btn primary onClick={() => downloadCsv("syncline-personnel.csv", [
-            ["Name","Alias","SAP No","Category","Position","Crew","Pattern","Company","POH",
-             "Contract Type","Gender","ATSI","Email","Mobile No","Mobe date","Demobe Date"],
+            ["Name","Alias","SAP No","Category","Position","Crew","Pattern","Swing start",
+             "Pattern change booked","Company","POH","Contract Type","Gender","ATSI","Email",
+             "Mobile No","Mobe date","Demobe Date"],
             ...shownPeople.map((e) => {
               const sg = segmentFor(e, focusDate);
+              const nx = (e.patterns || []).filter((x) => x.from > focusDate)
+                .sort((a, b) => (a.from < b.from ? -1 : 1))[0];
               return [e.name, e.alias, e.sap, e.category, e.position, e.crew,
-                sg ? sg.pattern : "", e.company, e.poh, e.contract, e.gender, e.atsi,
+                sg ? sg.pattern : "", sg ? sg.anchor : "",
+                nx ? `${nx.pattern} from ${nx.from}` : "",
+                e.company, e.poh, e.contract, e.gender, e.atsi,
                 e.email, e.phone, e.mobeDate, e.demobDate];
             }),
           ])}>Export register to Excel</Btn>
@@ -3036,7 +3053,7 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
           <table style={{ minWidth: 1980 }}>
             <thead><tr>
               <th style={th}>Name</th><th style={th}>Position</th><th style={th}>Category</th>
-              <th style={th}>Crew</th><th style={th}>Pattern now</th>
+              <th style={th}>Crew</th><th style={th}>Pattern</th>
               <th style={th}>Company</th><th style={th}>POH</th><th style={th}>Contract</th>
               <th style={th}>Gender</th><th style={th}>ATSI</th>
               <th style={th}>Email</th><th style={th}>Phone</th>
@@ -3050,6 +3067,10 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
               )}
               {shownPeople.map((e) => {
                 const seg = segmentFor(e, focusDate);
+                /* a change set to start later is easy to miss, so show it here too */
+                const next = (e.patterns || [])
+                  .filter((x) => x.from > focusDate)
+                  .sort((a, b) => (a.from < b.from ? -1 : 1))[0];
                 return (
                   <tr key={e.id} style={{ opacity: e.demobDate ? 0.55 : 1 }}>
                     <td style={td}><input value={e.name} style={{ width: 180, fontWeight: 600 }}
@@ -3064,9 +3085,14 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
                     </td>
                     <td style={td}><input value={e.crew || ""} style={{ width: 62 }}
                       onChange={(ev) => updateEmployee(e.id, { crew: ev.target.value })} /></td>
-                    <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>
+                    <td style={{ ...td, fontFamily: mono, fontSize: 11, whiteSpace: "nowrap" }}>
                       {seg ? seg.pattern : "—"}
-                      <span style={{ color: C.dimmer }}> · {seg ? fmtShort(seg.anchor) : ""}</span>
+                      <span style={{ color: C.dimmer }}> · swing {seg ? fmtShort(seg.anchor) : ""}</span>
+                      {next && (
+                        <div style={{ color: C.red, fontSize: 10.5, marginTop: 2 }}>
+                          → {next.pattern} from {fmtShort(next.from)}
+                        </div>
+                      )}
                     </td>
                     <td style={td}><input value={e.company || ""} style={{ width: 96 }}
                       onChange={(ev) => updateEmployee(e.id, { company: ev.target.value })} /></td>
