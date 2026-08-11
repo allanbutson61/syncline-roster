@@ -202,11 +202,14 @@ const diffDays = (a, b) => Math.round((parse(a) - parse(b)) / MS);
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const dow = (iso) => parse(iso).getUTCDay();
-const fmtShort = (iso) => `${parse(iso).getUTCDate()} ${MON[parse(iso).getUTCMonth()]}`;
+const fmtShort = (iso) => `${parse(iso).getUTCDate()} ${MON[parse(iso).getUTCMonth()]} ${parse(iso).getUTCFullYear()}`;
+/* the short form, for the grid columns where the month band already shows the year */
+const fmtDay = (iso) => `${parse(iso).getUTCDate()} ${MON[parse(iso).getUTCMonth()]}`;
 const fmtLong = (iso) => `${DOW[dow(iso)]} ${parse(iso).getUTCDate()} ${MON[parse(iso).getUTCMonth()]} ${parse(iso).getUTCFullYear()}`;
 const nowStamp = () => new Date().toISOString();
 const fmtStamp = (s) => { const d = new Date(s);
-  return `${String(d.getDate()).padStart(2,"0")} ${MON[d.getMonth()]} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
+  return `${String(d.getDate()).padStart(2,"0")} ${MON[d.getMonth()]} ${d.getFullYear()} `
+    + `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
 const DATES = Array.from({ length: HORIZON_DAYS }, (_, i) => addDays(HORIZON_START, i));
 const bySurname = (a, b) => (a.name || "").localeCompare((b.name || ""), "en",
   { sensitivity: "base" });
@@ -222,6 +225,22 @@ function segmentFor(emp, iso) {
   const segs = (emp.patterns || []).filter((s) => s.from <= iso);
   if (!segs.length) return null;
   return segs.reduce((a, b) => (a.from > b.from ? a : b));
+}
+
+/* The swing this person's pattern is built around, travel days included.
+   For 2:2 and 2:1 that is 14. Staff on 8:6 or 4:3 are measured against
+   their own pattern rather than against 14, so their normal swings do
+   not read as faults. */
+function expectedSwing(emp, iso) {
+  const seg = segmentFor(emp, iso);
+  if (!seg) return null;
+  const p = PATTERN_REGISTRY[seg.pattern];
+  if (!p || p.adhoc || p.office) return null;
+  if (p.seq) {
+    return p.seq.reduce((n, [code, len]) =>
+      n + (code === "RR" || code === "RDO" ? 0 : len), 0);
+  }
+  return p.on || null;
 }
 
 function patternCode(emp, iso) {
@@ -338,6 +357,11 @@ const METRICS = [
 
 /* ---------- ROSTER SENSE CHECKS ---------- */
 
+const seg0 = (emp, iso) => {
+  const sg = segmentFor(emp, iso);
+  return sg ? sg.pattern : "rostered";
+};
+
 function checkEmployee(emp, codeFor, dates) {
   const out = [];
   const seq = dates.map((iso) => ({ iso, code: codeFor(emp, iso) }));
@@ -388,6 +412,23 @@ function checkEmployee(emp, codeFor, dates) {
         flag(iso, `Travels out ${fmtShort(iso)} with no inbound travel beforehand.`, "critical");
       } else if (workSinceIn === 0) {
         flag(openIn, `Travels in ${fmtShort(openIn)} and out ${fmtShort(iso)} with no rostered work days in between.`, "critical");
+      } else {
+        /* a swing shorter than the pattern, unless leave either side explains it */
+        const want = expectedSwing(emp, openIn);
+        const span = diffDays(iso, openIn) + 1;
+        if (want && span < want) {
+          const before = codeFor(emp, addDays(openIn, -1));
+          const after = codeFor(emp, addDays(iso, 1));
+          const isLeave = (c) => !!(c && CODES[c] && CODES[c].leave);
+          if (isLeave(before) || isLeave(after)) {
+            /* deliberate — leave butts up against it */
+          } else {
+            flag(openIn,
+              `Swing of ${span} days, ${fmtShort(openIn)} to ${fmtShort(iso)}, including travel — `
+              + `the ${seg0(emp, openIn)} pattern is ${want} days. No leave either side to explain it.`,
+              "warning");
+          }
+        }
       }
       openIn = null; workSinceIn = 0; lastOut = iso;
       closeStray();

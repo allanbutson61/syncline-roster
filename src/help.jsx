@@ -367,6 +367,10 @@ const SECTIONS = [
            "Work days with no flight in — either the flight is missing or the days are wrong"],
           ["R & R immediately after travelling in",
            "Flew someone in and then gave them the swing off"],
+          ["Swing of N days … the pattern is 14 days",
+           "The swing is shorter than the person's roster pattern, counting the travel days. "
+           + "It is only raised when there is no leave immediately before or after — leave either "
+           + "side means the short swing was deliberate, so nothing is flagged"],
         ]} />
         <Steps items={[
           "Click the warning on the Dashboard. It takes you to that person and that date.",
