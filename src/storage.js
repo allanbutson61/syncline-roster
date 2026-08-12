@@ -114,6 +114,7 @@ async function loadShared() {
     thresholds: settings.thresholds || undefined,
     dismissed: settings.dismissed || {},
     customPatterns: settings.customPatterns || {},
+    notes: settings.notes || {},
     savedAt: settings.meta ? settings.meta.savedAt : null,
     savedBy: settings.meta ? settings.meta.savedBy : null,
   };
@@ -199,6 +200,7 @@ async function saveShared(snapshot) {
 
   /* --- settings --- */
   const settingRows = [
+    { key: "notes", value: snapshot.notes || {} },
     { key: "thresholds", value: snapshot.thresholds || {} },
     { key: "dismissed", value: snapshot.dismissed || {} },
     { key: "customPatterns", value: snapshot.customPatterns || {} },
@@ -215,6 +217,7 @@ async function saveShared(snapshot) {
   }
 
   last = { ...snapshot, __settings: {
+    notes: snapshot.notes,
     thresholds: snapshot.thresholds, dismissed: snapshot.dismissed,
     customPatterns: snapshot.customPatterns,
     meta: { savedAt: snapshot.savedAt, savedBy: snapshot.savedBy },

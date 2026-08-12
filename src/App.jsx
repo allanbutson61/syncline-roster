@@ -123,6 +123,7 @@ const SOLID = {
   "LWOP":  ["#E9E0F4", "#5A3E86", "#D6C8EA"],
   "PH":    ["#F8DEEE", "#8E3D6C", "#EFC6DF"],
   "Nshow": ["#B02423", "#FFFFFF", "#B02423"],
+  "T":     ["#312122", "#FFFFFF", "#312122"],
   "WL":    ["#FBE3CF", "#A8541B", "#B02423"],
   other:   ["#F5EFD6", "#6E5E17", "#E6DBB6"],
 };
@@ -349,7 +350,8 @@ const METRICS = [
   { id: "sup",    name: "Supervisors on site",    min: 1, test: (e) => e.category === "Supervisor" },
   { id: "s26",    name: "Section 26 supervision", min: 1, test: (e) => e.s26 },
   { id: "lead",   name: "Leading hands",          min: 1, test: (e) => e.leadingHand },
-  { id: "ns",     name: "Night shift crew",       min: 2, test: () => true, onlyCode: (c) => c === "NS" },
+  { id: "ns",     name: "Night shift crew",       min: 1, exact: true,
+    test: () => true, onlyCode: (c) => c === "NS" },
   { id: "grader", name: "Grader operators",       min: 2, test: (e) => e.grader },
   { id: "hse",    name: "HSE on site",            min: 0, test: (e) => e.category === "HSE Advisor" },
   { id: "pm",     name: "Project manager on site",min: 0, test: (e) => e.category === "Project Manager" },
@@ -693,13 +695,15 @@ function Roster({ profile }) {
      is actually on the roster that day. Shown on the cell, tracked on the
      Travel tab, and ignored by the roster checks until it is confirmed. */
   const [watch, setWatch] = useState({});
+  /* free text against one person on one day — excess baggage, a phone call, anything */
+  const [notes, setNotes] = useState({});
 
   const hydrated = useRef(false);
   const saveTimer = useRef(null);
 
   const snapshot = () => ({
     employees, overrides, leaveRecords, travel, requests, actions, log, thresholds, dismissed,
-    customPatterns, noShows, watch,
+    customPatterns, noShows, watch, notes,
     savedAt: nowStamp(), savedBy: user || "unknown",
   });
 
@@ -723,6 +727,7 @@ function Roster({ profile }) {
         if (d.dismissed) setDismissed(d.dismissed);
         if (d.customPatterns) setCustomPatterns_(d.customPatterns);
         if (d.watch) setWatch(d.watch);
+        if (d.notes) setNotes(d.notes);
         setSync({ state: "ok", at: d.savedAt, by: d.savedBy });
       } else setSync({ state: "empty", at: null, by: null });
     } catch {
@@ -771,7 +776,7 @@ function Roster({ profile }) {
     }, 900);
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds, dismissed, customPatterns, noShows, watch]);
+  }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds, dismissed, customPatterns, noShows, watch, notes]);
 
   const userRef = useRef(user);
   useEffect(() => { userRef.current = user; }, [user]);
@@ -971,9 +976,20 @@ function Roster({ profile }) {
     daily.forEach((d) => {
       METRICS.forEach((m) => {
         const min = thresholds[m.id];
-        if (min && d.counts[m.id] < min)
-          out.push({ iso: d.iso, metric: m.id, name: m.name, have: d.counts[m.id], need: min,
-            sev: d.counts[m.id] === 0 ? "critical" : "warning" });
+        if (!min) return;
+        const have = d.counts[m.id];
+        /* most rules are a minimum; night shift is an exact number, so too
+           many is as much of a problem as too few */
+        if (m.exact) {
+          if (have === min) return;
+          out.push({ iso: d.iso, metric: m.id, name: m.name, have, need: min,
+            over: have > min,
+            sev: have === 0 ? "critical" : "warning" });
+          return;
+        }
+        if (have < min)
+          out.push({ iso: d.iso, metric: m.id, name: m.name, have, need: min,
+            sev: have === 0 ? "critical" : "warning" });
       });
     });
     return out;
@@ -1240,6 +1256,20 @@ function Roster({ profile }) {
     setWatch((w) => { const n = { ...w }; delete n[empId + "|" + iso]; return n; });
   };
 
+  const setNote = (empId, iso, text) => {
+    if (!requireUser()) return;
+    const emp = employees.find((e) => e.id === empId);
+    const was = (notes[empId + "|" + iso] || {}).text || "";
+    setNotes((n) => {
+      const x = { ...n };
+      if (!text.trim()) delete x[empId + "|" + iso];
+      else x[empId + "|" + iso] = { text: text.trim(), by: user || "unsigned", at: nowStamp() };
+      return x;
+    });
+    record({ kind: "note", empId, name: emp ? emp.name : "?", date: iso,
+      from: was || "—", to: text.trim() || "removed", why: "note on the roster" });
+  };
+
   const addNoShow = (rec) => {
     if (!requireUser()) return;
     const emp = employees.find((e) => e.id === Number(rec.empId));
@@ -1316,13 +1346,23 @@ function Roster({ profile }) {
       why: "pattern change reversed" });
   };
 
+  const sameRequest = (a, b) => a.empId === b.empId
+    && a.kind === b.kind
+    && JSON.stringify(a.changes.map((c) => [c.date, c.movement]).sort())
+       === JSON.stringify(b.changes.map((c) => [c.date, c.movement]).sort());
+
   const submitRequest = (req) => {
     if (!requireUser()) return;
+    const dupe = requests.find((r) => r.status === "pending" && sameRequest(r, req));
+    if (dupe) return { error:
+      `That request is already waiting — raised by ${dupe.by} on ${fmtStamp(dupe.at)}. `
+      + `Action or remove that one rather than sending it again.` };
     const emp = employees.find((e) => e.id === req.empId);
     const before = {};
     rangeDays(addDays(req.changes[0].date, -8), addDays(req.changes[req.changes.length - 1].date, 8))
       .forEach((d) => (before[d] = codeFor(emp, d)));
-    const full = { ...req, id: "R" + Date.now(), status: "pending", by: user || "unsigned",
+    const full = { ...req, kind: req.kind || "travel",
+      id: "R" + Date.now(), status: "pending", by: user || "unsigned",
       at: nowStamp(), before, name: emp ? emp.name : "?",
       problems: problemsFromChanges(req.empId, req.changes).map((x) => ({ iso: x.iso, msg: x.msg })) };
     setRequests((r) => [full, ...r]);
@@ -1336,15 +1376,64 @@ function Roster({ profile }) {
       `\n\nReason: ${req.reason || "not given"}\n\nOpen the Requests tab for the before and after roster.`,
       "request"
     );
+    return { error: null };
   };
 
   const markRequested = (reqId) => {
     if (!requireUser()) return;
     const req = requests.find((r) => r.id === reqId);
     if (!req) return;
+
+    if (req.kind === "demob") {
+      const from = req.changes[0].date;
+      const emp = employees.find((e) => e.id === req.empId);
+      /* the last departure before that date becomes the demobilisation date */
+      let lastOut = "";
+      for (let i = 1; i <= 60 && !lastOut; i++) {
+        const d = addDays(from, -i);
+        if (dirOf(codeFor(emp, d)) === "OUT") lastOut = d;
+      }
+      /* clear everything from that date, then mark it terminated */
+      setOverrides((o) => {
+        const n = {};
+        Object.keys(o).forEach((k) => {
+          const bar = k.indexOf("|");
+          if (Number(k.slice(0, bar)) === req.empId && k.slice(bar + 1) >= from) return;
+          n[k] = o[k];
+        });
+        n[req.empId + "|" + from] = "T";
+        return n;
+      });
+      setEmployees((es) => es.map((e) => e.id === req.empId
+        ? { ...e, demobDate: lastOut || addDays(from, -1) } : e));
+      record({ kind: "person", empId: req.empId, name: req.name, date: from,
+        from: "mobilised", to: `terminated ${fmtShort(from)}, demobilised ${fmtShort(lastOut || addDays(from, -1))}`,
+        why: req.reason || "demobilised on request" });
+      setRequests((rs) => rs.map((r) => r.id === reqId
+        ? { ...r, status: "demobilised", actionedBy: user || "unsigned", actionedAt: nowStamp() } : r));
+      return;
+    }
+
+    if (req.kind === "shift") {
+      req.changes.forEach((c) => setCell(req.empId, c.date, c.movement,
+        `shift change on request${req.reason ? " — " + req.reason : ""}`));
+      setRequests((rs) => rs.map((r) => r.id === reqId
+        ? { ...r, status: "changed", actionedBy: user || "unsigned", actionedAt: nowStamp() } : r));
+      return;
+    }
+
     req.changes.forEach((c) => {
       if (c.movement === "__cancel") setCell(req.empId, c.date, "RR", "travel cancelled on request");
       else setCell(req.empId, c.date, travelCode(c.movement, "requested"), "requested from travel team");
+    });
+    /* days between a requested fly-in and fly-out become site days */
+    const ins = req.changes.filter((c) => MOVEMENTS[c.movement] && MOVEMENTS[c.movement].dir === "IN");
+    ins.forEach((inLeg) => {
+      const out = req.changes.find((c) => c.date > inLeg.date
+        && MOVEMENTS[c.movement] && MOVEMENTS[c.movement].dir === "OUT");
+      if (!out) return;
+      for (let d = addDays(inLeg.date, 1); d < out.date; d = addDays(d, 1))
+        setCell(req.empId, d, req.siteShift || "1", "site days from the request");
     });
     setRequests((rs) => rs.map((r) => r.id === reqId
       ? { ...r, status: "rescheduled", actionedBy: user || "unsigned", actionedAt: nowStamp() } : r));
@@ -1497,7 +1586,7 @@ function Roster({ profile }) {
         {view === "dash" && <Dashboard {...{ today, daily, dayIndex, focusDate, setFocusDate,
           thresholds, upcoming, upcomingAnomalies, jumpTo, toRequestCount, setView,
           dismissAnomaly, actions, markActionDone, employees, watchList: watch }} />}
-        {view === "grid" && <Grid {...{ watch, visibleEmployees, employees, gridStart, setGridStart, gridDays,
+        {view === "grid" && <Grid {...{ watch, notes, setNote, visibleEmployees, employees, gridStart, setGridStart, gridDays,
           setGridDays, cellW, setCellW, codeFor, setCell, brush, setBrush, painting, setPainting, daily, dayIndex,
           undo, undoStack,
           thresholds, crews, cats, crewFilter, setCrewFilter, catFilter, setCatFilter, search,
@@ -1639,6 +1728,7 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
     rows.forEach((a) => {
       const last = out[out.length - 1];
       if (last && last.metric === a.metric && last.have === a.have && last.need === a.need
+        && last.over === a.over
         && diffDays(a.iso, last.to) === 1) { last.to = a.iso; last.days++; return; }
       out.push({ ...a, to: a.iso, days: 1 });
     });
@@ -1651,10 +1741,14 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
         <Tile label="Total on site" value={today.total} sub="all categories" state="ok" />
         {METRICS.map((m) => {
           const have = today.counts[m.id], min = thresholds[m.id];
-          const state = !min ? "" : have < min ? (have === 0 ? "bad" : "warn") : "ok";
+          const wrong = m.exact ? have !== min : have < min;
+          const state = !min ? "" : wrong ? (have === 0 ? "bad" : "warn") : "ok";
           const sub = m.id === "ops"
             ? `${today.opsDay} DS · ${today.opsNight} NS${today.acting ? " · 1 acting §26" : ""}`
-            : min ? `min ${min}${have < min ? ` · short ${min - have}` : ""}` : "no minimum";
+            : min ? (m.exact
+                ? `should be ${min}${have > min ? ` · ${have - min} too many` : have < min ? ` · short ${min - have}` : ""}`
+                : `min ${min}${have < min ? ` · short ${min - have}` : ""}`)
+              : "no minimum";
           return <Tile key={m.id} label={m.name} value={have} sub={sub}
             state={state} onClick={() => jumpTo(focusDate)} />;
         })}
@@ -1715,6 +1809,8 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
                   {a.days > 1 ? `${fmtShort(a.iso)} – ${fmtShort(a.to)}` : `${DOW[dow(a.iso)]} ${fmtShort(a.iso)}`}
                 </div>
                 <div style={{ fontSize: 12.5, flex: 1 }}>{a.name}
+                  {a.over && <span style={{ fontFamily: mono, fontSize: 10.5, color: C.orange,
+                    marginLeft: 7 }}>more than needed</span>}
                   {a.days > 1 && <span style={{ fontFamily: mono, fontSize: 10.5, color: C.dim,
                     marginLeft: 7 }}>{a.days} days</span>}</div>
                 <div style={{ fontFamily: mono, fontSize: 12, color: a.sev === "critical" ? C.red : C.dim }}>
@@ -1773,7 +1869,7 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
    ROSTER GRID
    ============================================================ */
 
-function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gridDays, setGridDays, cellW,
+function Grid({ watch, notes, setNote, visibleEmployees, employees, gridStart, setGridStart, gridDays, setGridDays, cellW,
   setCellW, codeFor, undo, undoStack,
   setCell, brush, setBrush, painting, setPainting, daily, dayIndex, thresholds, crews, cats,
   crewFilter, setCrewFilter, catFilter, setCatFilter, search, setSearch, picked, setPicked,
@@ -1858,7 +1954,7 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
           <span style={{ fontFamily: mono, fontSize: 11, color: C.dim, marginLeft: "auto" }}>
             showing {visibleEmployees.length} of {employees.length}</span>
           <Btn primary onClick={() => {
-            const head = ["Employee", "Crew", "Pattern", "Category", "Position"]
+            const head = ["Employee", "SAP No", "Crew", "Pattern", "Category", "Position"]
               .concat(gridDates.map((d) => fmtShort(d)));
             const rows = [
               [`Syncline Haulage roster  ${fmtShort(gridDates[0])} to ${fmtShort(gridDates[gridDays - 1])}`],
@@ -1866,13 +1962,13 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
             ];
             visibleEmployees.forEach((emp) => {
               const seg = segmentFor(emp, gridStart);
-              rows.push([emp.name, emp.crew, seg ? seg.pattern : "", emp.category, emp.position]
+              rows.push([emp.name, emp.sap || "", emp.crew, seg ? seg.pattern : "", emp.category, emp.position]
                 .concat(gridDates.map((d) => codeText(codeFor(emp, d)))));
             });
             rows.push([]);
-            rows.push(["Operators on site", "", "", "", ""]
+            rows.push(["Operators on site", "", "", "", "", ""]
               .concat(gridDates.map((d) => (daily[dayIndex[d]] ? daily[dayIndex[d]].counts.ops : ""))));
-            rows.push(["Section 26 on site", "", "", "", ""]
+            rows.push(["Section 26 on site", "", "", "", "", ""]
               .concat(gridDates.map((d) => (daily[dayIndex[d]] ? daily[dayIndex[d]].counts.s26 : ""))));
             downloadCsv(`syncline-roster-${gridDates[0]}.csv`, rows);
           }}>Export to Excel</Btn>
@@ -1979,7 +2075,7 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
                   {d ? <>
                     <span style={{ color: d.counts.s26 < thresholds.s26 ? C.red : C.dimmer }}>{d.counts.s26}</span>
                     <span style={{ color: C.line2 }}>·</span>
-                    <span style={{ color: d.counts.ns < thresholds.ns ? C.red : C.dimmer }}>{d.counts.ns}</span>
+                    <span style={{ color: d.counts.ns !== thresholds.ns ? C.red : C.dimmer }}>{d.counts.ns}</span>
                     <span style={{ color: C.line2 }}>·</span>
                     <span style={{ color: d.counts.grader < thresholds.grader ? C.red : C.dimmer }}>{d.counts.grader}</span>
                   </> : ""}
@@ -2014,7 +2110,7 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
                     {emp.name}{emp.s26 && <span style={{ color: C.orange, fontSize: 10, marginLeft: 4 }}>§26</span>}
                   </div>
                   <div style={{ fontFamily: mono, fontSize: 9.5, color: C.dimmer, whiteSpace: "nowrap" }}>
-                    {emp.crew} · {seg ? seg.pattern : "—"}
+                    {emp.sap ? emp.sap + " · " : ""}{emp.crew} · {seg ? seg.pattern : "—"}
                     {emp.grader && " · GRD"}{emp.leadingHand && " · LH"}
                   </div>
                 </div>
@@ -2032,6 +2128,7 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
                   const st = travelState(code);
                   const anom = anomalyMap[emp.id + "|" + iso];
                   const wl = watch[emp.id + "|" + iso];
+                  const note = notes[emp.id + "|" + iso];
                   return (
                     <div key={iso} className="cell"
                       onClick={(e) => e.stopPropagation()}
@@ -2044,6 +2141,7 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
                         : code ? (CODES[code] ? CODES[code].label : code)
                         : outside ? "outside the mobilisation dates" : "not rostered"}${
                         wl ? "\nAlso waitlisted: " + (CODES[wl.code] ? CODES[wl.code].label : wl.code) : ""}${
+                        note ? "\nNote: " + note.text : ""}${
                         anom ? " — " + anom.msg : ""}`}
                       style={{ width: CW, flex: `0 0 ${CW}px`, height: 30, color: fg,
                         background: preMobe || postDemob
@@ -2068,6 +2166,10 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
                         <div style={{ position: "absolute", top: 1, right: 1, width: 4, height: 4,
                           background: C.red, borderRadius: "50%" }} />
                       )}
+                      {note && (
+                        <div style={{ position: "absolute", top: 0, left: 0, width: 0, height: 0,
+                          borderTop: `7px solid ${C.orange}`, borderRight: "7px solid transparent" }} />
+                      )}
                       {anom && <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 4,
                         background: C.red }} />}
                     </div>
@@ -2083,6 +2185,7 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
         Plain blue = day shift. Red dot = manual change over the pattern. Hatched = outside mobilisation
         dates. Red bar along the bottom of a cell = the roster checks have flagged that day.
         A pink strip along the bottom of a cell is a waitlisted seat running alongside — keep checking it.
+        An orange corner at the top left means there is a note on that day; hover to read it.
       </div>
 
       {menu && (
@@ -2125,6 +2228,23 @@ function Grid({ watch, visibleEmployees, employees, gridStart, setGridStart, gri
           ))}
           <MenuItem code="__clear" label="Back to pattern"
             onClick={() => { setCell(menu.emp.id, menu.iso, "__clear", "back to pattern", { validate: true }); setMenu(null); }} />
+          <div style={{ padding: "8px 10px", borderTop: `1px solid ${C.line}`, background: C.panel2 }}>
+            <div style={{ fontFamily: disp, fontSize: 11, letterSpacing: ".12em", color: C.dim,
+              textTransform: "uppercase", marginBottom: 4 }}>Note for this day</div>
+            <textarea rows={2} defaultValue={(notes[menu.emp.id + "|" + menu.iso] || {}).text || ""}
+              placeholder="excess baggage, a phone call, anything worth recording"
+              style={{ width: "100%" }}
+              onBlur={(e) => setNote(menu.emp.id, menu.iso, e.target.value)} />
+            {notes[menu.emp.id + "|" + menu.iso] && (
+              <div style={{ fontFamily: mono, fontSize: 9.5, color: C.dimmer, marginTop: 3 }}>
+                {notes[menu.emp.id + "|" + menu.iso].by} ·{" "}
+                {fmtStamp(notes[menu.emp.id + "|" + menu.iso].at)}
+              </div>
+            )}
+            <div style={{ marginTop: 6, display: "flex", gap: 8 }}>
+              <Btn small primary onClick={() => setMenu(null)}>Save and close</Btn>
+            </div>
+          </div>
         </div>
       )}
     </div>
@@ -2715,12 +2835,60 @@ function ManualTravel({ employees, setCell, setTravel, user }) {
 function Requests({ employees, requests, submitRequest, markRequested, declineRequest,
   removeRequest, codeFor, focusDate, problemsFromChanges }) {
   const [empId, setEmpId] = useState(employees[6] ? employees[6].id : 1);
+  const [kind, setKind] = useState("travel");
   const [reason, setReason] = useState("");
+  const [siteShift, setSiteShift] = useState("1");
   const [changes, setChanges] = useState([{ date: focusDate, movement: "FOP" }]);
+  const [err, setErr] = useState("");
 
   const emp = employees.find((e) => e.id === Number(empId));
   const setChange = (i, patch) => setChanges((cs) => cs.map((c, j) => (j === i ? { ...c, ...patch } : c)));
+
+  /* the strip on the right follows the first day being changed, so what you
+     are looking at is always the part of the roster you are altering */
+  const anchorDate = changes.map((c) => c.date).filter(Boolean).sort()[0] || focusDate;
+
+  const options = kind === "shift"
+    ? [["1", "DS · day shift"], ["NS", "NS · night shift"]]
+    : kind === "demob"
+      ? [["__demob", "demobilise from this date"]]
+      : [...Object.keys(MOVEMENTS).map((m) => [m, `${m} · ${MOVEMENTS[m].label}`]),
+         ["__cancel", "cancel travel"]];
+
+  /* travel that would sit badly with the shift being asked for */
+  const shiftAdvice = useMemo(() => {
+    if (kind !== "shift" || !emp) return [];
+    const out = [];
+    const days = changes.filter((c) => c.date).map((c) => c.date).sort();
+    if (!days.length) return out;
+    const last = days[days.length - 1];
+    const wanted = changes.find((c) => c.date === last).movement;
+
+    /* the next departure after the run being changed */
+    let outDate = null, outCode = null;
+    for (let i = 1; i <= 21 && !outDate; i++) {
+      const d = addDays(last, i);
+      const c = codeFor(emp, d);
+      if (dirOf(c) === "OUT") { outDate = d; outCode = c; }
+      else if (dirOf(c) === "IN") break;
+    }
+    if (!outDate) return out;
+    const mv = movementOf(outCode);
+    if (wanted === "NS" && mv && mv.endsWith("P")) {
+      out.push(`Coming off night shift on the morning of ${fmtShort(outDate)}, they could fly out then. `
+        + `The departure is ${outCode} — an AM flight would save a day in camp unpaid. `
+        + `Consider changing it to ${mv.slice(0, 2)}A.`);
+    }
+    if (wanted === "1" && mv && mv.endsWith("A") && diffDays(outDate, last) > 0) {
+      out.push(`Finishing day shift on ${fmtShort(last)} and flying out the morning of ${fmtShort(outDate)} `
+        + `means a night in camp. A PM departure on ${fmtShort(last)} would avoid it — `
+        + `consider ${mv.slice(0, 2)}P.`);
+    }
+    return out;
+  }, [kind, emp, changes, codeFor]);
+
   const problems = useMemo(() => {
+    if (kind !== "travel") return [];
     const rows = changes.filter((c) => c.date);
     const out = [];
     rows.forEach((c) => {
@@ -2729,13 +2897,32 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
       if (advice) out.push({ iso: c.date, msg: `${c.movement} on ${fmtShort(c.date)} — ${advice}` });
     });
     return out.concat(problemsFromChanges(Number(empId), rows));
-  }, [empId, changes, problemsFromChanges]);
+  }, [kind, empId, changes, problemsFromChanges]);
+
+  /* days that will be filled in between a requested fly-in and fly-out */
+  const filledDays = useMemo(() => {
+    if (kind !== "travel") return null;
+    const rows = changes.filter((c) => c.date).sort((a, b) => (a.date < b.date ? -1 : 1));
+    const inLeg = rows.find((c) => MOVEMENTS[c.movement] && MOVEMENTS[c.movement].dir === "IN");
+    if (!inLeg) return null;
+    const outLeg = rows.find((c) => c.date > inLeg.date
+      && MOVEMENTS[c.movement] && MOVEMENTS[c.movement].dir === "OUT");
+    if (!outLeg) return null;
+    const n = diffDays(outLeg.date, inLeg.date) - 1;
+    return n > 0 ? { n, from: addDays(inLeg.date, 1), to: addDays(outLeg.date, -1) } : null;
+  }, [kind, changes]);
 
   const submit = () => {
     const clean = changes.filter((c) => c.date).sort((a, b) => (a.date < b.date ? -1 : 1));
-    if (!clean.length) return;
-    submitRequest({ empId: Number(empId), reason, changes: clean });
-    setReason(""); setChanges([{ date: focusDate, movement: "FOP" }]);
+    if (!clean.length) { setErr("Add at least one date."); return; }
+    if (kind === "demob" && !reason.trim()) {
+      setErr("A reason is needed for a demobilisation."); return;
+    }
+    const res = submitRequest({ empId: Number(empId), reason, changes: clean, kind,
+      siteShift: kind === "travel" ? siteShift : undefined });
+    if (res && res.error) { setErr(res.error); return; }
+    setErr("");
+    setReason(""); setChanges([{ date: focusDate, movement: kind === "shift" ? "1" : "FOP" }]);
   };
 
   const pending = requests.filter((r) => r.status === "pending");
@@ -2744,30 +2931,88 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
   return (
     <div style={{ display: "grid", gap: 18 }}>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(300px, 400px) 1fr", gap: 18 }}>
-        <Panel title="Request a travel change" note="site crew">
+        <Panel title="Raise a request" note="site crew">
           <Field label="Employee">
             <select value={empId} onChange={(e) => setEmpId(e.target.value)} style={{ width: "100%" }}>
               {employees.slice().sort(bySurname).map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
             </select>
           </Field>
-          <Field label="Changes requested">
+          <Field label="What kind of change">
+            <select value={kind} style={{ width: "100%" }}
+              onChange={(e) => {
+                const k = e.target.value;
+                setKind(k); setErr("");
+                setChanges([{ date: anchorDate,
+                  movement: k === "shift" ? "1" : k === "demob" ? "__demob" : "FOP" }]);
+              }}>
+              <option value="travel">Travel — flights in or out</option>
+              <option value="shift">Shift — day shift or night shift</option>
+              <option value="demob">Demobilise — the person is leaving</option>
+            </select>
+          </Field>
+          <Field label={kind === "demob" ? "Demobilised from" : "Changes requested"}>
             {changes.map((c, i) => (
               <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6 }}>
                 <input type="date" value={c.date} onChange={(e) => setChange(i, { date: e.target.value })}
                   style={{ flex: 1 }} />
-                <select value={c.movement} onChange={(e) => setChange(i, { movement: e.target.value })}>
-                  {Object.keys(MOVEMENTS).map((m) => <option key={m} value={m}>{m}</option>)}
-                  <option value="__cancel">cancel travel</option>
+                <select value={c.movement} onChange={(e) => setChange(i, { movement: e.target.value })}
+                  disabled={kind === "demob"}>
+                  {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
-                {changes.length > 1 && (
+                {changes.length > 1 && kind !== "demob" && (
                   <Btn small danger onClick={() => setChanges((cs) => cs.filter((_, j) => j !== i))}>×</Btn>
                 )}
               </div>
             ))}
-            <Btn small onClick={() => setChanges((cs) => [...cs, { date: focusDate, movement: "FIA" }])}>
-              Add another day
-            </Btn>
+            {kind !== "demob" && (
+              <Btn small onClick={() => setChanges((cs) => [...cs,
+                { date: anchorDate, movement: kind === "shift" ? "NS" : "FIA" }])}>
+                Add another day
+              </Btn>
+            )}
           </Field>
+
+          {kind === "demob" && (
+            <div style={{ border: `1px solid ${C.orange}`, borderLeft: `4px solid ${C.orange}`,
+              background: "#FDF4EE", padding: "10px 12px", marginBottom: 12, fontSize: 12.5,
+              lineHeight: 1.55 }}>
+              When the office actions this, everything on {emp ? emp.name : "their"} roster from{" "}
+              <b>{fmtShort(anchorDate)}</b> is cleared, a <b>T</b> is put on that day, and the
+              demobilisation date is set to their last departure before it.
+            </div>
+          )}
+
+          {filledDays && (
+            <div style={{ border: `1px solid ${C.line2}`, background: C.panel2, padding: "10px 12px",
+              marginBottom: 12, fontSize: 12.5, lineHeight: 1.55 }}>
+              The {filledDays.n} day{filledDays.n === 1 ? "" : "s"} between,{" "}
+              {fmtShort(filledDays.from)} to {fmtShort(filledDays.to)}, will be filled as site days.
+              <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+                <span style={{ fontFamily: disp, fontSize: 11.5, letterSpacing: ".12em",
+                  color: C.dim, textTransform: "uppercase" }}>as</span>
+                <select value={siteShift} onChange={(e) => setSiteShift(e.target.value)}>
+                  <option value="1">Day shift</option>
+                  <option value="NS">Night shift</option>
+                </select>
+                <span style={{ fontFamily: mono, fontSize: 10.5, color: C.dim }}>
+                  or add those days above to mix the two
+                </span>
+              </div>
+            </div>
+          )}
+
+          {shiftAdvice.length > 0 && (
+            <div style={{ border: `1px solid ${C.orange}`, borderLeft: `4px solid ${C.orange}`,
+              background: "#FDF4EE", padding: "10px 12px", marginBottom: 12 }}>
+              <div style={{ fontFamily: disp, fontSize: 12.5, letterSpacing: ".1em", color: C.red,
+                textTransform: "uppercase", fontWeight: 600, marginBottom: 6 }}>
+                Worth changing the flight too
+              </div>
+              {shiftAdvice.map((m, i) => (
+                <div key={i} style={{ fontSize: 12.5, marginBottom: 4, lineHeight: 1.55 }}>• {m}</div>
+              ))}
+            </div>
+          )}
           <Field label="Reason">
             <textarea rows={3} value={reason} onChange={(e) => setReason(e.target.value)}
               placeholder="why the change is needed" style={{ width: "100%" }} />
@@ -2787,6 +3032,10 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
               </div>
             </div>
           )}
+          {err && (
+            <div style={{ border: `1px solid ${C.red}`, background: "#FCEAE7", padding: "10px 12px",
+              marginBottom: 12, fontSize: 12.5, color: C.red, lineHeight: 1.55 }}>{err}</div>
+          )}
           <Btn primary onClick={submit}>
             {problems.length ? "Send anyway" : "Send request"}
           </Btn>
@@ -2796,9 +3045,16 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
           </div>
         </Panel>
 
-        <Panel title="Roster as it stands" note={emp ? emp.name : ""}>
-          {emp && <StripCells cells={Array.from({ length: 21 }, (_, i) => addDays(focusDate, i - 3))
-            .map((d) => ({ iso: d, code: codeFor(emp, d) }))} />}
+        <Panel title="Roster as it stands"
+          note={`${emp ? emp.name : ""} · ${fmtShort(addDays(anchorDate, -5))} to ${fmtShort(addDays(anchorDate, 15))}`}>
+          {emp && <StripCells
+            marked={changes.map((c) => c.date).filter(Boolean)}
+            cells={Array.from({ length: 21 }, (_, i) => addDays(anchorDate, i - 5))
+              .map((d) => ({ iso: d, code: codeFor(emp, d) }))} />}
+          <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 10 }}>
+            This follows the first date being changed, so it always shows the part of the roster
+            the request affects. Days being changed are ringed.
+          </div>
         </Panel>
       </div>
 
@@ -2815,6 +3071,10 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
               borderLeft: `3px solid ${C.orange}` }}>
               <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap" }}>
                 <div style={{ fontSize: 14, fontWeight: 600 }}>{r.name}</div>
+                <div style={{ fontFamily: mono, fontSize: 10.5, color: "#FFF", background: C.dim,
+                  padding: "1px 6px", borderRadius: 2 }}>
+                  {r.kind === "demob" ? "demobilise" : r.kind === "shift" ? "shift" : "travel"}
+                </div>
                 <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim }}>
                   requested by {r.by} · {fmtStamp(r.at)}</div>
               </div>
@@ -2844,7 +3104,11 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
               </div>
 
               <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
-                <Btn primary onClick={() => markRequested(r.id)}>Mark as requested with travel team</Btn>
+                <Btn primary onClick={() => markRequested(r.id)}>
+                  {r.kind === "demob" ? "Demobilise"
+                    : r.kind === "shift" ? "Apply the shift change"
+                    : "Mark as requested with travel team"}
+                </Btn>
                 <Btn danger onClick={() => declineRequest(r.id)}>Decline</Btn>
                 <Btn danger onClick={() => removeRequest(r.id)}>Remove</Btn>
               </div>
@@ -2854,16 +3118,34 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
       </Panel>
 
       {done.length > 0 && (
-        <Panel title="Actioned" pad={0}>
+        <Panel title="Actioned" note={`${done.length} · reason and who raised it are kept`} pad={0}>
           {done.map((r) => (
-            <div key={r.id} style={{ display: "flex", gap: 12, alignItems: "center", padding: "8px 16px",
-              borderBottom: `1px solid ${C.line}` }}>
-              <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, width: 92 }}>{fmtStamp(r.at)}</div>
-              <div style={{ fontSize: 12.5, flex: 1 }}>{r.name}</div>
-              <div style={{ fontFamily: mono, fontSize: 11, color: r.status === "declined" ? C.red : C.ok }}>
-                {r.status}</div>
-              <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, width: 110 }}>{r.actionedBy}</div>
-              <Btn small danger onClick={() => removeRequest(r.id)}>Remove</Btn>
+            <div key={r.id} style={{ padding: "9px 16px", borderBottom: `1px solid ${C.line}` }}>
+              <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{r.name}</div>
+                <div style={{ fontFamily: mono, fontSize: 10.5, color: "#FFF", background: C.dim,
+                  padding: "1px 6px", borderRadius: 2 }}>
+                  {r.kind === "demob" ? "demobilise" : r.kind === "shift" ? "shift" : "travel"}
+                </div>
+                <div style={{ fontFamily: mono, fontSize: 11,
+                  color: r.status === "declined" ? C.red : C.ok }}>{r.status}</div>
+                <div style={{ flex: 1 }} />
+                <Btn small danger onClick={() => removeRequest(r.id)}>Remove</Btn>
+              </div>
+              <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 3 }}>
+                {(r.changes || []).map((c) => `${fmtShort(c.date)} ${
+                  c.movement === "__cancel" ? "cancel travel"
+                  : c.movement === "__demob" ? "demobilise"
+                  : codeText(c.movement)}`).join(" · ")}
+              </div>
+              <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 3 }}>
+                raised by {r.by} {fmtStamp(r.at)} · actioned by {r.actionedBy || "—"}
+                {r.actionedAt ? ` ${fmtStamp(r.actionedAt)}` : ""}
+              </div>
+              {r.reason && (
+                <div style={{ fontSize: 12.5, color: C.ink, marginTop: 5, paddingLeft: 10,
+                  borderLeft: `2px solid ${C.line2}` }}>{r.reason}</div>
+              )}
             </div>
           ))}
         </Panel>
@@ -2872,10 +3154,12 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
   );
 }
 
-function StripCells({ cells }) {
+function StripCells({ cells, marked }) {
+  const ring = new Set(marked || []);
   return (
     <div style={{ display: "flex", gap: 1, overflowX: "auto" }}>
-      {cells.map((c) => {
+      {cells.map((c, i) => {
+        const first = i === 0 || parse(c.iso).getUTCDate() === 1;
         const [bg, fg, br] = codeStyle(c.code);
         const st = travelState(c.code);
         return (
@@ -2883,9 +3167,13 @@ function StripCells({ cells }) {
             style={{ flex: "0 0 34px", textAlign: "center" }}>
             <div style={{ fontFamily: mono, fontSize: 8.5, color: C.dimmer }}>{DOW[dow(c.iso)][0]}</div>
             <div style={{ fontFamily: mono, fontSize: 9.5, color: C.dim }}>{parse(c.iso).getUTCDate()}</div>
+            <div style={{ fontFamily: mono, fontSize: 7.5, color: first ? C.red : C.dimmer,
+              fontWeight: first ? 700 : 400, height: 10 }}>
+              {MON[parse(c.iso).getUTCMonth()]}{first ? " " + String(parse(c.iso).getUTCFullYear()).slice(2) : ""}
+            </div>
             <div style={{ height: 26, background: bg, color: fg, border: `1px solid ${br}`,
               borderStyle: st === "requested" ? "dashed" : "solid",
-              outline: c.changed ? `2px solid ${C.red}` : "none", outlineOffset: -1,
+              outline: (c.changed || ring.has(c.iso)) ? `2px solid ${C.red}` : "none", outlineOffset: -1,
               display: "flex", alignItems: "center", justifyContent: "center",
               fontFamily: mono, fontSize: 8 }}>
               {codeText(c.code)}
@@ -3011,7 +3299,9 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 10 }}>
             {METRICS.map((m) => (
               <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{ flex: 1, fontSize: 12.5 }}>{m.name}</div>
+                <div style={{ flex: 1, fontSize: 12.5 }}>{m.name}
+                  {m.exact && <span style={{ fontFamily: mono, fontSize: 10, color: C.dim,
+                    marginLeft: 6 }}>exactly</span>}</div>
                 <input type="number" min="0" max="30" value={thresholds[m.id]} style={{ width: 62 }}
                   disabled={!isAdmin}
                   onChange={(e) => isAdmin && setThresholds((t) => ({ ...t, [m.id]: Number(e.target.value) || 0 }))} />
@@ -3114,7 +3404,7 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
         <div style={{ overflowX: "auto" }}>
           <table style={{ minWidth: 1980 }}>
             <thead><tr>
-              <th style={th}>Name</th><th style={th}>Position</th><th style={th}>Category</th>
+              <th style={th}>Name</th><th style={th}>SAP No</th><th style={th}>Position</th><th style={th}>Category</th>
               <th style={th}>Crew</th><th style={th}>Pattern</th>
               <th style={th}>Company</th><th style={th}>POH</th><th style={th}>Contract</th>
               <th style={th}>Gender</th><th style={th}>ATSI</th>
@@ -3137,6 +3427,8 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
                   <tr key={e.id} style={{ opacity: e.demobDate ? 0.55 : 1 }}>
                     <td style={td}><input value={e.name} style={{ width: 180, fontWeight: 600 }}
                       onChange={(ev) => updateEmployee(e.id, { name: ev.target.value })} /></td>
+                    <td style={td}><input value={e.sap || ""} style={{ width: 78 }}
+                      onChange={(ev) => updateEmployee(e.id, { sap: ev.target.value })} /></td>
                     <td style={td}><input value={e.position || ""} style={{ width: 230 }}
                       onChange={(ev) => updateEmployee(e.id, { position: ev.target.value })} /></td>
                     <td style={td}>
@@ -3890,7 +4182,7 @@ function Audit({ log }) {
   const [csv, setCsv] = useState("");
 
   const people = ["All", ...Array.from(new Set(log.map((l) => l.name)))];
-  const kinds = ["All", "cell", "leave", "person", "pattern", "request", "check", "noshow"];
+  const kinds = ["All", "cell", "leave", "person", "pattern", "request", "check", "noshow", "note"];
   const filtered = log.filter((l) => (who === "All" || l.name === who) && (kind === "All" || l.kind === kind));
 
   const makeCsv = () => {
