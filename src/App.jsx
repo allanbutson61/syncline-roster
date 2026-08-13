@@ -279,6 +279,15 @@ function patternCode(emp, iso) {
   return base;
 }
 
+/* Night shift used to be a minimum of 2. It is now an exact count of 1, so a
+   saved 2 is a leftover from the old rule rather than a decision anyone made.
+   Anything other than 2 is left alone — that was somebody choosing. */
+function migrateThresholds(saved) {
+  if (!saved) return saved;
+  if (saved.ns === 2) return { ...saved, ns: 1 };
+  return saved;
+}
+
 /* ---------- IS THERE A FLIGHT? ----------
    Checks a travel movement against FMG's weekly schedule and, when
    there isn't one, says what there is instead and when the next one
@@ -723,7 +732,7 @@ function Roster({ profile }) {
         if (d.requests) setRequests(d.requests);
         if (d.actions) setActions(d.actions);
         if (d.log) setLog(d.log);
-        if (d.thresholds) setThresholds(d.thresholds);
+        if (d.thresholds) setThresholds(migrateThresholds(d.thresholds));
         if (d.dismissed) setDismissed(d.dismissed);
         if (d.customPatterns) setCustomPatterns_(d.customPatterns);
         if (d.watch) setWatch(d.watch);
