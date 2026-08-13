@@ -190,8 +190,10 @@ const CATEGORIES = ["Operator", "Leading Hand", "Supervisor", "Project Manager",
 const USERS = ["Jaki Soutar", "Kiteesha", "Kylie Turner", "Wes Clack", "Greg Jozwicki", "Donna Matiu", "Allan Butson"];
 const ADMINS = ["Jaki Soutar", "Kiteesha", "Kylie Turner"];
 
-const HORIZON_START = "2026-01-01";
-const HORIZON_DAYS = 640;
+/* Reaches back to December 2025 because leave that began in 2025 carries its
+   true start date, and the roster has to have somewhere to show it. */
+const HORIZON_START = "2025-12-01";
+const HORIZON_DAYS = 671;
 
 /* ---------- DATES ---------- */
 
@@ -830,6 +832,17 @@ function Roster({ profile }) {
 
   useMemo(() => setCustomPatterns(customPatterns), [customPatterns]);
 
+  /* Every day covered by a leave record, from the register itself. The register
+     is the source of truth for leave; the roster cell is a copy of it. */
+  const leaveDays = useMemo(() => {
+    const m = {};
+    (leaveRecords || []).forEach((r) => {
+      if (!r.from || !r.to) return;
+      rangeDays(r.from, r.to).forEach((d) => (m[r.empId + "|" + d] = r.code));
+    });
+    return m;
+  }, [leaveRecords]);
+
   const codeFor = useCallback((emp, iso) => {
     const k = emp.id + "|" + iso;
     if (k in overrides) return overrides[k];
@@ -1096,6 +1109,40 @@ function Roster({ profile }) {
       );
     }
     return ok;
+  };
+
+  /* A leave day is missing when the roster shows something that is neither the
+     leave code nor a travel movement. Travel on a leave day is legitimate — the
+     flight and the leave share the day — so those are left alone. */
+  const missingLeave = useMemo(() => {
+    const out = [];
+    Object.keys(leaveDays).forEach((k) => {
+      const bar = k.indexOf("|");
+      const empId = Number(k.slice(0, bar));
+      const iso = k.slice(bar + 1);
+      const emp = employees.find((e) => e.id === empId);
+      if (!emp) return;
+      const now = codeFor(emp, iso);
+      if (now === leaveDays[k]) return;
+      if (movementOf(now)) return;
+      out.push({ empId, iso, want: leaveDays[k], now: now || "—", name: emp.name });
+    });
+    return out.sort((a, b) => (a.iso < b.iso ? -1 : 1));
+  }, [leaveDays, employees, codeFor]);
+
+  const reinstateLeave = () => {
+    if (!requireUser()) return;
+    if (!missingLeave.length) return;
+    setOverrides((o) => {
+      const n = { ...o };
+      missingLeave.forEach((x) => (n[x.empId + "|" + x.iso] = x.want));
+      return n;
+    });
+    const people = Array.from(new Set(missingLeave.map((x) => x.name)));
+    record({ kind: "leave", empId: 0, name: people.length === 1 ? people[0] : `${people.length} people`,
+      date: `${missingLeave[0].iso} → ${missingLeave[missingLeave.length - 1].iso}`,
+      from: "missing from the roster", to: `${missingLeave.length} day(s) reinstated`,
+      why: "leave register reconciled with the roster" });
   };
 
   const removeLeave = (id) => {
@@ -1595,12 +1642,13 @@ function Roster({ profile }) {
         {view === "dash" && <Dashboard {...{ today, daily, dayIndex, focusDate, setFocusDate,
           thresholds, upcoming, upcomingAnomalies, jumpTo, toRequestCount, setView,
           dismissAnomaly, actions, markActionDone, employees, watchList: watch }} />}
-        {view === "grid" && <Grid {...{ watch, notes, setNote, visibleEmployees, employees, gridStart, setGridStart, gridDays,
+        {view === "grid" && <Grid {...{ watch, notes, setNote, leaveDays, visibleEmployees, employees, gridStart, setGridStart, gridDays,
           setGridDays, cellW, setCellW, codeFor, setCell, brush, setBrush, painting, setPainting, daily, dayIndex,
           undo, undoStack,
           thresholds, crews, cats, crewFilter, setCrewFilter, catFilter, setCatFilter, search,
           setSearch, picked, setPicked, focusDate, setFocusDate, overrides, menu, setMenu, anomalies }} />}
-        {view === "leave" && <Leave {...{ employees, leaveRecords, addLeave, removeLeave, focusDate }} />}
+        {view === "leave" && <Leave {...{ employees, leaveRecords, addLeave, removeLeave, focusDate,
+          missingLeave, reinstateLeave }} />}
         {view === "travel" && <Travel {...{ employees, travel, setTravel, setCell, actions, user,
           applyTravelBatch, markActionDone, watch, employees, confirmWatch, clearWatch,
           removeTravel }} />}
@@ -1878,7 +1926,7 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
    ROSTER GRID
    ============================================================ */
 
-function Grid({ watch, notes, setNote, visibleEmployees, employees, gridStart, setGridStart, gridDays, setGridDays, cellW,
+function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, gridStart, setGridStart, gridDays, setGridDays, cellW,
   setCellW, codeFor, undo, undoStack,
   setCell, brush, setBrush, painting, setPainting, daily, dayIndex, thresholds, crews, cats,
   crewFilter, setCrewFilter, catFilter, setCatFilter, search, setSearch, picked, setPicked,
@@ -2138,6 +2186,11 @@ function Grid({ watch, notes, setNote, visibleEmployees, employees, gridStart, s
                   const anom = anomalyMap[emp.id + "|" + iso];
                   const wl = watch[emp.id + "|" + iso];
                   const note = notes[emp.id + "|" + iso];
+                  /* the flight and the leave share the day, so show both */
+                  const lv = leaveDays[emp.id + "|" + iso];
+                  const both = lv && movementOf(code) ? lv : null;
+                  const strip = wl ? { code: wl.code, kind: "wl" }
+                    : both ? { code: both, kind: "leave" } : null;
                   return (
                     <div key={iso} className="cell"
                       onClick={(e) => e.stopPropagation()}
@@ -2150,6 +2203,7 @@ function Grid({ watch, notes, setNote, visibleEmployees, employees, gridStart, s
                         : code ? (CODES[code] ? CODES[code].label : code)
                         : outside ? "outside the mobilisation dates" : "not rostered"}${
                         wl ? "\nAlso waitlisted: " + (CODES[wl.code] ? CODES[wl.code].label : wl.code) : ""}${
+                        both ? "\nCounts as a leave day: " + (CODES[both] ? CODES[both].label : both) : ""}${
                         note ? "\nNote: " + note.text : ""}${
                         anom ? " — " + anom.msg : ""}`}
                       style={{ width: CW, flex: `0 0 ${CW}px`, height: 30, color: fg,
@@ -2160,15 +2214,21 @@ function Grid({ watch, notes, setNote, visibleEmployees, employees, gridStart, s
                         cursor: "cell", userSelect: "none", position: "relative",
                         boxShadow: st && st !== "confirmed" ? `inset 0 0 0 2px ${br}` : "none" }}>
                       {preMobe || postDemob ? "" : showText
-                        ? (wl ? <span style={{ marginTop: -8 }}>{codeText(code)}</span> : codeText(code))
+                        ? (strip ? <span style={{ marginTop: -8 }}>{codeText(code)}</span> : codeText(code))
                         : ""}
-                      {wl && !preMobe && !postDemob && (
-                        <div title={`Also waitlisted: ${CODES[wl.code] ? CODES[wl.code].label : wl.code}`}
+                      {strip && !preMobe && !postDemob && (
+                        <div title={strip.kind === "wl"
+                          ? `Also waitlisted: ${CODES[strip.code] ? CODES[strip.code].label : strip.code}`
+                          : `Counts as a leave day: ${CODES[strip.code] ? CODES[strip.code].label : strip.code}`}
                           style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 11,
-                            background: "#FCE2DE", color: "#9B2B22", fontFamily: mono,
+                            background: strip.kind === "wl" ? "#FCE2DE" : codeStyle(strip.code)[0],
+                            color: strip.kind === "wl" ? "#9B2B22" : codeStyle(strip.code)[1],
+                            fontFamily: mono,
                             fontSize: CW >= 32 ? 7.5 : 6.5, lineHeight: "11px", textAlign: "center",
-                            borderTop: `1px dashed ${C.red}`, overflow: "hidden" }}>
-                          {CW >= 26 ? wl.code : "WL"}
+                            borderTop: `1px ${strip.kind === "wl" ? "dashed" : "solid"} ${
+                              strip.kind === "wl" ? C.red : codeStyle(strip.code)[2]}`,
+                            overflow: "hidden" }}>
+                          {CW >= 26 ? strip.code : (strip.kind === "wl" ? "WL" : strip.code)}
                         </div>
                       )}
                       {isOverride && !preMobe && !postDemob && (
@@ -2195,6 +2255,8 @@ function Grid({ watch, notes, setNote, visibleEmployees, employees, gridStart, s
         dates. Red bar along the bottom of a cell = the roster checks have flagged that day.
         A pink strip along the bottom of a cell is a waitlisted seat running alongside — keep checking it.
         An orange corner at the top left means there is a note on that day; hover to read it.
+        A coloured strip under a flight is leave running on the same day — the travel happens, and
+        the day still counts as leave.
       </div>
 
       {menu && (
@@ -2277,7 +2339,8 @@ function MenuItem({ code, label, onClick }) {
    LEAVE
    ============================================================ */
 
-function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate }) {
+function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
+  missingLeave, reinstateLeave }) {
   const [empId, setEmpId] = useState(employees[6] ? employees[6].id : 1);
   const [code, setCode] = useState("AL");
   const [from, setFrom] = useState(focusDate);
@@ -2338,7 +2401,37 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate }) {
   const td = { padding: "6px 10px", borderBottom: `1px solid ${C.line}`, fontSize: 12.5 };
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(300px, 370px) 1fr", gap: 18 }}>
+    <div style={{ display: "grid", gap: 18 }}>
+      {missingLeave && missingLeave.length > 0 && (
+        <Panel title="Leave not showing on the roster"
+          note={`${missingLeave.length} day${missingLeave.length === 1 ? "" : "s"}`}>
+          <div style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 10 }}>
+            These days are on the leave register but the roster shows something else. Reinstating
+            writes the leave back onto those days. Days where travel falls inside the leave are left
+            alone — the flight still happens and shows the leave alongside it.
+          </div>
+          <div style={{ maxHeight: 150, overflowY: "auto", marginBottom: 10 }}>
+            {missingLeave.slice(0, 60).map((x, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, alignItems: "center",
+                fontFamily: mono, fontSize: 11, padding: "2px 0", color: C.dim }}>
+                <span style={{ width: 108 }}>{fmtShort(x.iso)}</span>
+                <span style={{ flex: 1, color: C.ink }}>{x.name}</span>
+                <span>{codeText(x.now)} → {x.want}</span>
+              </div>
+            ))}
+            {missingLeave.length > 60 && (
+              <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dimmer, marginTop: 4 }}>
+                and {missingLeave.length - 60} more
+              </div>
+            )}
+          </div>
+          <Btn primary onClick={reinstateLeave}>
+            Reinstate {missingLeave.length} leave day{missingLeave.length === 1 ? "" : "s"}
+          </Btn>
+        </Panel>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(300px, 370px) 1fr", gap: 18 }}>
       <Panel title="Enter leave">
         <Field label="Employee">
           <select value={empId} onChange={(e) => setEmpId(e.target.value)} style={{ width: "100%" }}>
@@ -2429,6 +2522,7 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate }) {
           </table>
         </div>
       </Panel>
+      </div>
     </div>
   );
 }
