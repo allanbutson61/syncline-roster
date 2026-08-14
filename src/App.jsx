@@ -123,6 +123,7 @@ const SOLID = {
   "CL":    ["#FBE0DC", "#A02D24", "#F0C4BD"],
   "LWOP":  ["#E9E0F4", "#5A3E86", "#D6C8EA"],
   "PH":    ["#F8DEEE", "#8E3D6C", "#EFC6DF"],
+  "SD":    ["#E4E7EA", "#4A5560", "#C3CAD1"],
   "Nshow": ["#B02423", "#FFFFFF", "#B02423"],
   "T":     ["#312122", "#FFFFFF", "#312122"],
   "WL":    ["#FBE3CF", "#A8541B", "#B02423"],
@@ -2292,9 +2293,10 @@ function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, g
             fontSize: 10.5, color: C.dim, background: C.panel2 }}>
             {menu.emp.name}<br />{fmtLong(menu.iso)}
           </div>
-          {[["1", "Day shift"], ["NS", "Night shift"], ["RR", "R & R"], ["AL", "Annual leave"],
-            ["SL", "Sick leave"], ["TR", "Training course"], ["PEM", "Pre-employment medical"],
-            ["F2F", "Face to face induction"], ["CRS", "Course"]].map(([code, label]) => (
+          {[["1", "Day shift"], ["NS", "Night shift"], ["RR", "R & R"], ["SD", "Stand down"],
+            ["AL", "Annual leave"], ["SL", "Sick leave"], ["TR", "Training course"],
+            ["PEM", "Pre-employment medical"], ["F2F", "Face to face induction"],
+            ["CRS", "Course"]].map(([code, label]) => (
             <MenuItem key={code} code={code} label={label}
               onClick={() => { setCell(menu.emp.id, menu.iso, code, "roster edit", { validate: true }); setMenu(null); }} />
           ))}
