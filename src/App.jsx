@@ -736,8 +736,7 @@ function Roster({ profile }) {
         if (d.travel) setTravel(d.travel);
         if (d.requests) setRequests(d.requests);
         if (d.actions) setActions(d.actions);
-        if (d.log) setLog(d.log.map((r, i) => r.id ? r
-          : { ...r, id: "L" + (r.at || "") + ":" + i }));
+        if (d.log) setLog(d.log);
         if (d.thresholds) setThresholds(migrateThresholds(d.thresholds));
         if (d.dismissed) setDismissed(d.dismissed);
         if (d.customPatterns) setCustomPatterns_(d.customPatterns);
@@ -751,10 +750,6 @@ function Roster({ profile }) {
     hydrated.current = true;
   }, []);
 
-  useEffect(() => { loadShared(); }, [loadShared]);
-
-  /* When someone else changes something, pull it in. We ignore the echo
-     of our own writes for a moment so the screen does not flicker. */
   const savingUntil = useRef(0);
   /* True from the moment something is changed until that change is safely in
      the database. While it is true nothing reloads over the top — otherwise a
@@ -763,6 +758,29 @@ function Roster({ profile }) {
   const dirty = useRef(false);
   const reloadWanted = useRef(false);
 
+  useEffect(() => { loadShared(); }, [loadShared]);
+
+  /* Coming back to a tab that has been sitting in the background — a second
+     window, or one left open since this morning — it must catch up before
+     anything is looked at or saved, or it will quietly push its old view over
+     everyone else's work. */
+  useEffect(() => {
+    const catchUp = () => {
+      if (document.hidden) return;
+      if (dirty.current) return;          /* unsaved work here comes first */
+      if (Date.now() < savingUntil.current) return;
+      loadShared();
+    };
+    document.addEventListener("visibilitychange", catchUp);
+    window.addEventListener("focus", catchUp);
+    return () => {
+      document.removeEventListener("visibilitychange", catchUp);
+      window.removeEventListener("focus", catchUp);
+    };
+  }, [loadShared]);
+
+  /* When someone else changes something, pull it in. We ignore the echo
+     of our own writes for a moment so the screen does not flicker. */
   useEffect(() => {
     let timer = null;
     const stop = onRemoteChange(() => {
