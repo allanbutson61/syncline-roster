@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
-import { loadRoster, saveRoster, STORAGE_MODE, onRemoteChange, forgetCache } from "./storage.js";
+import { loadRoster, saveRoster, STORAGE_MODE, onRemoteChange, forgetCache,
+  lastSaveError } from "./storage.js";
 import { CONFIGURED, currentProfile, onAuthChange, signOut } from "./supabase.js";
 import SignIn from "./signin.jsx";
 import { FLIGHTS, DAY_NAMES, flightsOn, describeFlight, weeklySummary, siteFlights } from "./flights.js";
@@ -692,6 +693,7 @@ function Roster({ profile }) {
   const [confirm, setConfirm] = useState(null);
   const [blocked, setBlocked] = useState(false);
   const [remoteNote, setRemoteNote] = useState(null);
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     if (!remoteNote) return;
     const t = setTimeout(() => setRemoteNote(null), 6000);
@@ -733,7 +735,8 @@ function Roster({ profile }) {
         if (d.travel) setTravel(d.travel);
         if (d.requests) setRequests(d.requests);
         if (d.actions) setActions(d.actions);
-        if (d.log) setLog(d.log);
+        if (d.log) setLog(d.log.map((r, i) => r.id ? r
+          : { ...r, id: "L" + (r.at || "") + ":" + i }));
         if (d.thresholds) setThresholds(migrateThresholds(d.thresholds));
         if (d.dismissed) setDismissed(d.dismissed);
         if (d.customPatterns) setCustomPatterns_(d.customPatterns);
@@ -782,12 +785,12 @@ function Roster({ profile }) {
         setSync({ state: "ok", at: snap.savedAt, by: snap.savedBy });
       } catch {
         savingUntil.current = Date.now() + 3000;
-        setSync((s) => ({ ...s, state: "error" }));
+        setSync((s) => ({ ...s, state: "error", why: lastSaveError() }));
       }
     }, 900);
     return () => clearTimeout(saveTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds, dismissed, customPatterns, noShows, watch, notes]);
+  }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds, dismissed, customPatterns, noShows, watch, notes, retry]);
 
   const userRef = useRef(user);
   useEffect(() => { userRef.current = user; }, [user]);
@@ -812,7 +815,8 @@ function Roster({ profile }) {
   }, [requireUser]);
 
   const record = useCallback((entry) => {
-    setLog((l) => [{ ...entry, at: nowStamp(), by: user || "unsigned" }, ...l].slice(0, 800));
+    const id = "L" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    setLog((l) => [{ id, ...entry, at: nowStamp(), by: user || "unsigned" }, ...l].slice(0, 800));
   }, [user]);
 
   const notify = useCallback(async (subject, body, kind) => {
@@ -1618,13 +1622,34 @@ function Roster({ profile }) {
           <span style={{ fontFamily: mono, fontSize: 10.5, color: sync.state === "error" ? C.red : C.dimmer }}>
             {sync.state === "saving" ? "saving…"
               : sync.state === "loading" ? "loading…"
-              : sync.state === "error" ? "save failed"
+              : sync.state === "error" ? "NOT SAVED"
               : sync.at ? `${STORAGE_MODE === "local" ? "saved to this browser" : "shared roster"} ${fmtStamp(sync.at)}`
               : STORAGE_MODE === "local" ? "nothing saved yet" : "shared roster"}
           </span>
           <Btn small onClick={loadShared}>Refresh</Btn>
         </div>
       </div>
+
+      {sync.state === "error" && (
+        <div style={{ background: "#FCEAE7", borderBottom: `2px solid ${C.red}`,
+          padding: "11px 18px" }}>
+          <div style={{ fontFamily: disp, fontSize: 14, letterSpacing: ".08em",
+            textTransform: "uppercase", color: C.red, fontWeight: 700 }}>
+            Your last change has not been saved
+          </div>
+          <div style={{ fontSize: 13, marginTop: 4, lineHeight: 1.55 }}>
+            Everything is still on screen and nothing is lost — but it is only in this browser, so
+            do not sign out or close the tab yet. Press Retry. If it keeps failing, use{" "}
+            <b>Export to Excel</b> on the Roster tab to keep a copy, then send the wording below.
+          </div>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+            <Btn primary onClick={() => setRetry((n) => n + 1)}>Retry the save</Btn>
+            {sync.why && (
+              <span style={{ fontFamily: mono, fontSize: 10.5, color: C.red }}>{sync.why}</span>
+            )}
+          </div>
+        </div>
+      )}
 
       <div style={{ padding: "10px 18px", borderBottom: `1px solid ${C.line}`, display: "flex",
         alignItems: "center", gap: 12, flexWrap: "wrap", background: C.panel }}>

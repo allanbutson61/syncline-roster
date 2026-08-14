@@ -20,6 +20,12 @@ export const STORAGE_MODE = CONFIGURED ? "shared" : "local";
 
 /* what we last saw, so we can work out what changed */
 let last = null;
+let lastError = null;
+
+/* the reason the last save failed, so the screen can say rather than guess */
+export function lastSaveError() {
+  return lastError;
+}
 
 const cellKey = (empId, date) => empId + "|" + date;
 const splitKey = (k) => {
@@ -139,7 +145,7 @@ async function saveShared(snapshot) {
   });
   Object.keys(wasCells).forEach((k) => { if (!(k in nowCells)) removed.push(splitKey(k)); });
 
-  if (changed.length) jobs.push(supabase.from("roster_cells").upsert(changed));
+  chunked(changed).forEach((part) => jobs.push(supabase.from("roster_cells").upsert(part)));
   for (const [empId, date] of removed) {
     jobs.push(supabase.from("roster_cells").delete().eq("emp_id", empId).eq("the_date", date));
   }
@@ -157,7 +163,7 @@ async function saveShared(snapshot) {
     }
   });
   Object.keys(wasWatch).forEach((k) => { if (!(k in nowWatch)) watchGone.push(splitKey(k)); });
-  if (watchUp.length) jobs.push(supabase.from("watch_items").upsert(watchUp));
+  chunked(watchUp).forEach((part) => jobs.push(supabase.from("watch_items").upsert(part)));
   for (const [empId, date] of watchGone) {
     jobs.push(supabase.from("watch_items").delete().eq("emp_id", empId).eq("the_date", date));
   }
@@ -169,7 +175,7 @@ async function saveShared(snapshot) {
     .filter((e) => wasPeople[e.id] !== JSON.stringify(e))
     .map((e) => ({ id: e.id, data: e, updated_by: snapshot.savedBy,
       updated_at: new Date().toISOString() }));
-  if (peopleUp.length) jobs.push(supabase.from("people").upsert(peopleUp));
+  chunked(peopleUp).forEach((part) => jobs.push(supabase.from("people").upsert(part)));
 
   /* Anyone no longer on the list is removed, so a reseed with fewer people
      does not leave the ones who have gone sitting in the database. */
@@ -193,9 +199,9 @@ async function saveShared(snapshot) {
         up.push({ id, kind, data: r, created_by: r.by || snapshot.savedBy });
       delete wasById[id];
     });
-    if (up.length) jobs.push(supabase.from("records").upsert(up));
-    const gone = Object.keys(wasById);
-    if (gone.length) jobs.push(supabase.from("records").delete().in("id", gone));
+    chunked(up).forEach((part) => jobs.push(supabase.from("records").upsert(part)));
+    chunked(Object.keys(wasById)).forEach((part) =>
+      jobs.push(supabase.from("records").delete().in("id", part)));
   });
 
   /* --- settings --- */
@@ -213,8 +219,10 @@ async function saveShared(snapshot) {
   const bad = results.map((r) => r && r.error).find(Boolean);
   if (bad) {
     console.error("Could not save part of the roster", bad);
+    lastError = bad.message || String(bad);
     return false;
   }
+  lastError = null;
 
   last = { ...snapshot, __settings: {
     notes: snapshot.notes,
@@ -225,11 +233,25 @@ async function saveShared(snapshot) {
   return true;
 }
 
-/* records carry their own id in most cases; the change log does not */
+/* Every record carries its own id. The change log used to fall back on its
+   position in the list — and because the newest entry goes on the front, that
+   made every id shift on every save, so the whole log was deleted and rewritten
+   each time. Once it was a few hundred entries long the request was too big to
+   send and the save failed. Ids no longer depend on position. */
 function recId(r, kind, i) {
   if (r && r.id) return String(r.id);
-  if (kind === "log") return "log:" + (r.at || "") + ":" + (r.empId || 0) + ":" + (r.date || "") + ":" + i;
+  if (kind === "log")
+    return "log:" + (r.at || "") + ":" + (r.empId || 0) + ":" + (r.date || "")
+      + ":" + (r.kind || "") + ":" + (r.to || "");
   return kind + ":" + i;
+}
+
+/* Supabase takes these over a URL, so a few hundred ids at once is too many. */
+const CHUNK = 80;
+function chunked(list) {
+  const out = [];
+  for (let i = 0; i < list.length; i += CHUNK) out.push(list.slice(i, i + CHUNK));
+  return out;
 }
 
 /* ---------- what the app calls ---------- */
@@ -249,6 +271,7 @@ export async function saveRoster(snapshot) {
     return await saveShared(snapshot);
   } catch (e) {
     console.error(e);
+    lastError = e && e.message ? e.message : String(e);
     return false;
   }
 }
