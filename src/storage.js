@@ -121,8 +121,8 @@ async function loadShared() {
     dismissed: settings.dismissed || {},
     customPatterns: settings.customPatterns || {},
     notes: settings.notes || {},
-    savedAt: settings.meta ? settings.meta.savedAt : null,
-    savedBy: settings.meta ? settings.meta.savedBy : null,
+    savedAt: null,
+    savedBy: null,
   };
   last = snapshot;
   return snapshot;
@@ -205,12 +205,15 @@ async function saveShared(snapshot) {
   });
 
   /* --- settings --- */
+  /* Only what has actually changed. 'meta' used to be written every time — its
+     timestamp always differed — and because settings is administrator-only that
+     made every save by a supervisor fail. The saved-at time is shown from
+     memory instead; it does not need storing. */
   const settingRows = [
     { key: "notes", value: snapshot.notes || {} },
     { key: "thresholds", value: snapshot.thresholds || {} },
     { key: "dismissed", value: snapshot.dismissed || {} },
     { key: "customPatterns", value: snapshot.customPatterns || {} },
-    { key: "meta", value: { savedAt: snapshot.savedAt, savedBy: snapshot.savedBy } },
   ].filter((r) => JSON.stringify((prev.__settings || {})[r.key]) !== JSON.stringify(r.value))
    .map((r) => ({ ...r, updated_by: snapshot.savedBy, updated_at: new Date().toISOString() }));
   if (settingRows.length) jobs.push(supabase.from("settings").upsert(settingRows));
@@ -228,7 +231,6 @@ async function saveShared(snapshot) {
     notes: snapshot.notes,
     thresholds: snapshot.thresholds, dismissed: snapshot.dismissed,
     customPatterns: snapshot.customPatterns,
-    meta: { savedAt: snapshot.savedAt, savedBy: snapshot.savedBy },
   } };
   return true;
 }

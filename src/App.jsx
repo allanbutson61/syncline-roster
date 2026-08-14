@@ -1152,6 +1152,51 @@ function Roster({ profile }) {
     return out.sort((a, b) => (a.iso < b.iso ? -1 : 1));
   }, [leaveDays, employees, codeFor]);
 
+  /* The other direction: leave painted straight onto the roster never reaches
+     the register, so it is invisible to anyone looking there. Find runs of a
+     leave code on the roster that no record covers. */
+  const unregisteredLeave = useMemo(() => {
+    const out = [];
+    employees.forEach((emp) => {
+      let start = null, code = null, prev = null;
+      const close = (end) => {
+        if (!start) return;
+        /* already covered by a record? */
+        const covered = (leaveRecords || []).some((r) => r.empId === emp.id
+          && r.code === code && r.from <= start && r.to >= end);
+        if (!covered) out.push({ empId: emp.id, name: emp.name, code, from: start, to: end,
+          days: diffDays(end, start) + 1 });
+        start = null; code = null;
+      };
+      DATES.forEach((iso) => {
+        const c = codeFor(emp, iso);
+        const isLeave = !!(c && CODES[c] && CODES[c].leave);
+        if (isLeave && c === code && prev && diffDays(iso, prev) === 1) { prev = iso; return; }
+        if (start) close(prev);
+        if (isLeave) { start = iso; code = c; }
+        prev = iso;
+      });
+      close(prev);
+    });
+    return out.sort((a, b) => (a.from < b.from ? -1 : 1));
+  }, [employees, codeFor, leaveRecords]);
+
+  const registerLeave = () => {
+    if (!requireUser()) return;
+    if (!unregisteredLeave.length) return;
+    const added = unregisteredLeave.map((x, i) => ({
+      id: "R" + Date.now().toString(36) + i,
+      empId: x.empId, code: x.code, from: x.from, to: x.to,
+      note: "taken from the roster", by: user || "unsigned", at: nowStamp(),
+    }));
+    setLeaveRecords((r) => [...r, ...added]);
+    record({ kind: "leave", empId: 0,
+      name: added.length === 1 ? unregisteredLeave[0].name : `${added.length} blocks`,
+      date: `${unregisteredLeave[0].from} → ${unregisteredLeave[unregisteredLeave.length - 1].to}`,
+      from: "on the roster only", to: `${added.length} added to the register`,
+      why: "roster reconciled with the leave register" });
+  };
+
   const reinstateLeave = () => {
     if (!requireUser()) return;
     if (!missingLeave.length) return;
@@ -1705,7 +1750,7 @@ function Roster({ profile }) {
           thresholds, crews, cats, crewFilter, setCrewFilter, catFilter, setCatFilter, search,
           setSearch, picked, setPicked, focusDate, setFocusDate, overrides, menu, setMenu, anomalies }} />}
         {view === "leave" && <Leave {...{ employees, leaveRecords, addLeave, removeLeave, focusDate,
-          missingLeave, reinstateLeave }} />}
+          missingLeave, reinstateLeave, unregisteredLeave, registerLeave }} />}
         {view === "travel" && <Travel {...{ employees, travel, setTravel, setCell, actions, user,
           applyTravelBatch, markActionDone, watch, employees, confirmWatch, clearWatch,
           removeTravel }} />}
@@ -2398,7 +2443,7 @@ function MenuItem({ code, label, onClick }) {
    ============================================================ */
 
 function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
-  missingLeave, reinstateLeave }) {
+  missingLeave, reinstateLeave, unregisteredLeave, registerLeave }) {
   const [empId, setEmpId] = useState(employees[6] ? employees[6].id : 1);
   const [code, setCode] = useState("AL");
   const [from, setFrom] = useState(focusDate);
@@ -2485,6 +2530,36 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
           </div>
           <Btn primary onClick={reinstateLeave}>
             Reinstate {missingLeave.length} leave day{missingLeave.length === 1 ? "" : "s"}
+          </Btn>
+        </Panel>
+      )}
+
+      {unregisteredLeave && unregisteredLeave.length > 0 && (
+        <Panel title="Leave on the roster but not on the register"
+          note={`${unregisteredLeave.length} block${unregisteredLeave.length === 1 ? "" : "s"}`}>
+          <div style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 10 }}>
+            These days are marked as leave on the roster but no record covers them — usually leave
+            painted straight onto the grid rather than entered here. Adding them to the register
+            means they show up in searches, totals and exports.
+          </div>
+          <div style={{ maxHeight: 160, overflowY: "auto", marginBottom: 10 }}>
+            {unregisteredLeave.slice(0, 60).map((x, i) => (
+              <div key={i} style={{ display: "flex", gap: 10, alignItems: "center",
+                fontFamily: mono, fontSize: 11, padding: "2px 0", color: C.dim }}>
+                <span style={{ flex: 1, color: C.ink }}>{x.name}</span>
+                <span>{x.code}</span>
+                <span style={{ width: 200 }}>{fmtShort(x.from)} – {fmtShort(x.to)}</span>
+                <span style={{ width: 54 }}>{x.days}d</span>
+              </div>
+            ))}
+            {unregisteredLeave.length > 60 && (
+              <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dimmer, marginTop: 4 }}>
+                and {unregisteredLeave.length - 60} more
+              </div>
+            )}
+          </div>
+          <Btn primary onClick={registerLeave}>
+            Add {unregisteredLeave.length} block{unregisteredLeave.length === 1 ? "" : "s"} to the register
           </Btn>
         </Panel>
       )}
