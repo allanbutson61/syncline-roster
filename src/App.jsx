@@ -756,10 +756,20 @@ function Roster({ profile }) {
   /* When someone else changes something, pull it in. We ignore the echo
      of our own writes for a moment so the screen does not flicker. */
   const savingUntil = useRef(0);
+  /* True from the moment something is changed until that change is safely in
+     the database. While it is true nothing reloads over the top — otherwise a
+     change made in the second before a save could be wiped by an update
+     arriving from someone else, or by the echo of our own earlier writes. */
+  const dirty = useRef(false);
+  const reloadWanted = useRef(false);
+
   useEffect(() => {
     let timer = null;
     const stop = onRemoteChange(() => {
-      if (Date.now() < savingUntil.current) return;
+      if (Date.now() < savingUntil.current || dirty.current) {
+        reloadWanted.current = true;   /* pick it up once the save is done */
+        return;
+      }
       clearTimeout(timer);
       timer = setTimeout(() => {
         loadShared();
@@ -771,6 +781,7 @@ function Roster({ profile }) {
 
   useEffect(() => {
     if (!hydrated.current) return;
+    dirty.current = true;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       setSync((s) => ({ ...s, state: "saving" }));
@@ -783,7 +794,13 @@ function Roster({ profile }) {
         const ok = await saveRoster(snap);
         savingUntil.current = Date.now() + 3000;
         if (!ok) throw new Error("save failed");
-        setSync({ state: "ok", at: snap.savedAt, by: snap.savedBy });
+        dirty.current = false;
+        setSync({ state: "ok", at: snap.savedAt, by: snap.savedBy, why: null });
+        /* somebody else changed something while we were working — take it now */
+        if (reloadWanted.current) {
+          reloadWanted.current = false;
+          setTimeout(() => { if (!dirty.current) { loadShared(); setRemoteNote(nowStamp()); } }, 1200);
+        }
       } catch {
         savingUntil.current = Date.now() + 3000;
         setSync((s) => ({ ...s, state: "error", why: lastSaveError() }));
@@ -1211,6 +1228,20 @@ function Roster({ profile }) {
         }
         applyCell(empId, r.date, travelCode(r.movement, r.state),
           `FMG travel${r.flight ? " " + r.flight : ""}`);
+      });
+
+      /* Between flying out and flying back in the person is off site. Unless
+         leave is already recorded for those days, they are R & R. */
+      const legs = list.filter((r) => r.state !== "waitlisted" && MOVEMENTS[r.movement]);
+      legs.forEach((r, i) => {
+        if (MOVEMENTS[r.movement].dir !== "OUT") return;
+        const nextIn = legs.slice(i + 1).find((x) => MOVEMENTS[x.movement].dir === "IN");
+        if (!nextIn) return;
+        for (let d = addDays(r.date, 1); d < nextIn.date; d = addDays(d, 1)) {
+          const c = now(emp, d);
+          if (c && CODES[c] && (CODES[c].leave || c === "T")) continue;   /* leave stays */
+          applyCell(empId, d, "RR", "off site between flights");
+        }
       });
 
       list.forEach((r) => {
@@ -2702,6 +2733,24 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
   const td = { padding: "5px 8px", borderBottom: `1px solid ${C.line}`, fontSize: 12 };
   const [showDone, setShowDone] = useState(false);
 
+  /* ---- filters for the applied travel list ---- */
+  const [tq, setTq] = useState("");
+  const [tCode, setTCode] = useState("All");
+  const [tFrom, setTFrom] = useState("");
+  const [tTo, setTTo] = useState("");
+  const travelCodes = Array.from(new Set(travel.map((t) => t.code))).sort();
+  const shownTravel = travel.slice().reverse().filter((t) => {
+    if (tCode !== "All" && t.code !== tCode) return false;
+    if (tFrom && t.date < tFrom) return false;
+    if (tTo && t.date > tTo) return false;
+    if (tq.trim()) {
+      const q = tq.toLowerCase();
+      const hay = `${t.name} ${t.flight || ""} ${t.source || ""} ${t.by || ""} ${t.code}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
   const todayIso = toISO(new Date());
   const watchList = Object.keys(watch || {}).map((k) => {
     const bar = k.indexOf("|");
@@ -2873,10 +2922,34 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
         </Panel>
       )}
 
-      <Panel title="Applied travel" note={`${travel.length} movements`} pad={0}>
-        {travel.length === 0 && <div style={{ padding: 18, fontFamily: mono, fontSize: 12, color: C.dim }}>
-          Nothing applied yet.</div>}
-        {travel.slice().reverse().map((t) => (
+      <Panel title="Applied travel"
+        note={`${shownTravel.length} of ${travel.length} movements`} pad={0}>
+        <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.line}`, background: C.panel2,
+          display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>FIND</span>
+          <input value={tq} onChange={(e) => setTq(e.target.value)}
+            placeholder="name, flight number or source" style={{ width: 210 }} />
+          <select value={tCode} onChange={(e) => setTCode(e.target.value)}>
+            <option value="All">All statuses</option>
+            {travelCodes.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>BETWEEN</span>
+          <input type="date" value={tFrom} onChange={(e) => setTFrom(e.target.value)} />
+          <input type="date" value={tTo} onChange={(e) => setTTo(e.target.value)} />
+          {(tq || tCode !== "All" || tFrom || tTo) && (
+            <Btn small danger onClick={() => { setTq(""); setTCode("All"); setTFrom(""); setTTo(""); }}>
+              Clear filters
+            </Btn>
+          )}
+          <Btn small disabled={!shownTravel.length}
+            onClick={() => downloadCsv("applied-travel.csv", [
+              ["Employee", "Date", "Status", "Flight", "Source", "Applied by"],
+              ...shownTravel.map((t) => [t.name, t.date, t.code, t.flight || "", t.source || "", t.by || ""]),
+            ])}>Export to Excel</Btn>
+        </div>
+        {shownTravel.length === 0 && <div style={{ padding: 18, fontFamily: mono, fontSize: 12, color: C.dim }}>
+          {travel.length ? "Nothing matches those filters." : "Nothing applied yet."}</div>}
+        {shownTravel.map((t) => (
           <div key={t.id} style={{ display: "flex", gap: 14, alignItems: "center", padding: "8px 16px",
             borderBottom: `1px solid ${C.line}` }}>
             <div style={{ fontFamily: mono, fontSize: 11, color: C.dim, width: 78 }}>{fmtShort(t.date)}</div>
