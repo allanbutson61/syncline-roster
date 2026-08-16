@@ -1770,7 +1770,7 @@ function Roster({ profile }) {
         {view === "leave" && <Leave {...{ employees, leaveRecords, addLeave, removeLeave, focusDate,
           missingLeave, reinstateLeave, unregisteredLeave, registerLeave }} />}
         {view === "travel" && <Travel {...{ employees, travel, setTravel, setCell, actions, user,
-          applyTravelBatch, markActionDone, watch, employees, confirmWatch, clearWatch,
+          applyTravelBatch, markActionDone, watch, confirmWatch, clearWatch,
           removeTravel }} />}
         {view === "requests" && <Requests {...{ employees, requests, submitRequest, markRequested,
           declineRequest, removeRequest, codeFor, focusDate, problemsFromChanges }} />}
