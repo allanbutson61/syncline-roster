@@ -727,6 +727,10 @@ function Roster({ profile }) {
   const hydrated = useRef(false);
   const saveTimer = useRef(null);
 
+  /* Set while a reload is being written into state, so the save effect can
+     tell a change that came from the database from one a person made. */
+  const applyingLoad = useRef(false);
+
   const snapshot = () => ({
     employees, overrides, leaveRecords, travel, requests, actions, log, thresholds, dismissed,
     customPatterns, noShows, watch, notes,
@@ -738,6 +742,15 @@ function Roster({ profile }) {
     try {
       const d = await loadRoster();
       if (d) {
+        /* Everything set below is watched by the save effect. Left alone, a
+           reload marks the tab dirty and schedules a save of data that has
+           just come out of the database; that save emits change events, the
+           app reads them as somebody else editing, reloads again, and the
+           cycle repeats — which is what put "updated by someone else" on
+           screen over and over and wiped edits made while it was going round.
+           The first load is deliberately exempt: that save is what seeds an
+           empty database. */
+        if (hydrated.current) applyingLoad.current = true;
         /* An empty list means it has not been written yet — keep the seeded
            ones rather than blanking the tab. Applies to the three that are
            seeded from the spreadsheet; the rest start empty legitimately. */
@@ -811,6 +824,8 @@ function Roster({ profile }) {
 
   useEffect(() => {
     if (!hydrated.current) return;
+    /* This render came from a reload, not from a person — nothing to save. */
+    if (applyingLoad.current) { applyingLoad.current = false; return; }
     dirty.current = true;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
