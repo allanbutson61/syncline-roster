@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { loadRoster, saveRoster, STORAGE_MODE, onRemoteChange, forgetCache,
-  lastSaveError } from "./storage.js";
+  lastSaveError, lastSaveReport } from "./storage.js";
 import { CONFIGURED, currentProfile, onAuthChange, signOut } from "./supabase.js";
 import SignIn from "./signin.jsx";
 import { FLIGHTS, DAY_NAMES, flightsOn, describeFlight, weeklySummary, siteFlights } from "./flights.js";
@@ -780,10 +780,19 @@ function Roster({ profile }) {
             if (!(k in onScreen)) lost.push(`${k}  screen "none" -> database "${fromDb[k]}"`);
           });
           if (lost.length) {
+            const rep = lastSaveReport();
             console.warn(`ROSTER RELOAD changed ${lost.length} day(s) that were on screen. `
               + `If you have just made a change and it disappeared, it is one of these:`);
-            lost.slice(0, 40).forEach((l) => console.warn("   " + l));
+            lost.slice(0, 40).forEach((l) => {
+              const key = l.split("  ")[0];
+              const verdict = !rep ? "NO SAVE HAS RUN YET"
+                : rep.wrote.includes(key) ? `last save DID send this day (save ok: ${rep.ok})`
+                : rep.cleared.includes(key) ? "last save CLEARED this day"
+                : "last save NEVER SENT this day";
+              console.warn(`   ${l}   [${verdict}]`);
+            });
             if (lost.length > 40) console.warn(`   ...and ${lost.length - 40} more`);
+            console.warn(`   unsaved work still pending: ${dirty.current}`);
           } else {
             console.info("ROSTER RELOAD matched what was on screen — nothing was overwritten.");
           }
@@ -835,12 +844,31 @@ function Roster({ profile }) {
       loadShared();
     };
     document.addEventListener("visibilitychange", catchUp);
-    window.addEventListener("focus", catchUp);
     return () => {
       document.removeEventListener("visibilitychange", catchUp);
-      window.removeEventListener("focus", catchUp);
     };
   }, [loadShared]);
+
+  /* The roster used to catch up on the window focus event as well. That fires
+     every time the window regains focus — alt-tabbing, clicking back from
+     another program, moving between the page and the developer tools — so the
+     roster was being reloaded over the top of whatever was on screen many
+     times an hour rather than once when a tab came back into view.
+     visibilitychange alone covers what this is for. */
+
+  /* A save waits 900ms so that quick successive edits go in one write. Closing
+     or refreshing inside that window used to take the change with it, silently.
+     Ask first — this is the "changed it, pressed refresh, it came back" case. */
+  useEffect(() => {
+    const warn = (e) => {
+      if (!dirty.current) return;
+      e.preventDefault();
+      e.returnValue = "";
+      return "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, []);
 
   /* When someone else changes something, pull it in. We ignore the echo
      of our own writes for a moment so the screen does not flicker. */

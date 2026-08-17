@@ -27,6 +27,15 @@ export function lastSaveError() {
   return lastError;
 }
 
+/* What the last save actually attempted. Held so that when a reload disagrees
+   with the screen, the two can be put side by side: a day the save never
+   listed was never sent, while a day it did list was accepted and then came
+   back missing — which are different faults with different causes. */
+let lastReport = null;
+export function lastSaveReport() {
+  return lastReport;
+}
+
 const cellKey = (empId, date) => empId + "|" + date;
 const splitKey = (k) => {
   const i = k.indexOf("|");
@@ -251,6 +260,14 @@ async function saveShared(snapshot) {
   /* What this save is about to write. Paired with the reload check in the app,
      this shows whether a change that vanished was never written, or was
      written and then read back differently. Press F12 and read the Console. */
+  lastReport = {
+    at: new Date().toISOString(),
+    wrote: changed.map((r) => r.emp_id + "|" + r.the_date),
+    cleared: removed.map(([e, d]) => e + "|" + d),
+    jobs: jobs.length,
+    ok: null,
+  };
+
   console.info(`SAVE: ${changed.length} roster day(s) written, ${removed.length} cleared, `
     + `${peopleUp.length} personnel, ${settingRows.length} setting(s), `
     + `${jobs.length} request(s) in total`);
@@ -265,9 +282,11 @@ async function saveShared(snapshot) {
   if (bad) {
     console.error("Could not save part of the roster", bad);
     lastError = bad.message || String(bad);
+    lastReport.ok = false;
     return false;
   }
   lastError = null;
+  lastReport.ok = true;
 
   last = { ...snapshot, __settings: {
     notes: snapshot.notes,
