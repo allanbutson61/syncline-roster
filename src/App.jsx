@@ -212,6 +212,18 @@ const fmtShort = (iso) => `${parse(iso).getUTCDate()} ${MON[parse(iso).getUTCMon
 const fmtDay = (iso) => `${parse(iso).getUTCDate()} ${MON[parse(iso).getUTCMonth()]}`;
 const fmtLong = (iso) => `${DOW[dow(iso)]} ${parse(iso).getUTCDate()} ${MON[parse(iso).getUTCMonth()]} ${parse(iso).getUTCFullYear()}`;
 const nowStamp = () => new Date().toISOString();
+
+/* Every saved record needs an id no other record shares. Ids used to be built
+   from Date.now() alone, so anything creating several records in the same
+   millisecond — a travel import, two quick clicks — could mint the same id
+   twice. Those records are then written in one statement, and Postgres refuses
+   an upsert carrying the same key twice ("ON CONFLICT DO UPDATE command cannot
+   affect row a second time"), which failed the whole save. The random tail is
+   kept as text: Date.now() + Math.random() as a number loses almost all of the
+   random part, because the timestamp alone uses 41 of a double's 53 bits. */
+let uidCount = 0;
+const uid = (prefix) => prefix + Date.now().toString(36)
+  + (uidCount++).toString(36) + Math.random().toString(36).slice(2, 8);
 const fmtStamp = (s) => { const d = new Date(s);
   return `${String(d.getDate()).padStart(2,"0")} ${MON[d.getMonth()]} ${d.getFullYear()} `
     + `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; };
@@ -851,12 +863,12 @@ function Roster({ profile }) {
   }, [requireUser]);
 
   const record = useCallback((entry) => {
-    const id = "L" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+    const id = uid("L");
     setLog((l) => [{ id, ...entry, at: nowStamp(), by: user || "unsigned" }, ...l].slice(0, 800));
   }, [user]);
 
   const notify = useCallback(async (subject, body, kind) => {
-    const item = { id: "N" + Date.now() + Math.random(), subject, body, kind,
+    const item = { id: uid("N"), subject, body, kind,
       at: nowStamp(), by: user || "unsigned", emailed: false };
     try {
       const res = await fetch("/api/notify", {
@@ -1202,8 +1214,8 @@ function Roster({ profile }) {
   const registerLeave = () => {
     if (!requireUser()) return;
     if (!unregisteredLeave.length) return;
-    const added = unregisteredLeave.map((x, i) => ({
-      id: "R" + Date.now().toString(36) + i,
+    const added = unregisteredLeave.map((x) => ({
+      id: uid("R"),
       empId: x.empId, code: x.code, from: x.from, to: x.to,
       note: "taken from the roster", by: user || "unsigned", at: nowStamp(),
     }));
@@ -1428,7 +1440,7 @@ function Roster({ profile }) {
   const addNoShow = (rec) => {
     if (!requireUser()) return;
     const emp = employees.find((e) => e.id === Number(rec.empId));
-    const full = { ...rec, id: "N" + Date.now(), name: emp ? emp.name : rec.name,
+    const full = { ...rec, id: uid("N"), name: emp ? emp.name : rec.name,
       by: user || "unsigned", at: nowStamp() };
     setNoShows((n) => [full, ...n]);
     /* a no show is a fact about the roster, so mark the day */
@@ -1517,7 +1529,7 @@ function Roster({ profile }) {
     rangeDays(addDays(req.changes[0].date, -8), addDays(req.changes[req.changes.length - 1].date, 8))
       .forEach((d) => (before[d] = codeFor(emp, d)));
     const full = { ...req, kind: req.kind || "travel",
-      id: "R" + Date.now(), status: "pending", by: user || "unsigned",
+      id: uid("R"), status: "pending", by: user || "unsigned",
       at: nowStamp(), before, name: emp ? emp.name : "?",
       problems: problemsFromChanges(req.empId, req.changes).map((x) => ({ iso: x.iso, msg: x.msg })) };
     setRequests((r) => [full, ...r]);
@@ -2814,7 +2826,7 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
     applyTravelBatch(chosen);
     chosen.forEach((r) => {
       const emp = employees.find((e) => e.id === r.empId);
-      setTravel((t) => [...t, { id: Date.now() + Math.random(), empId: r.empId,
+      setTravel((t) => [...t, { id: uid("T"), empId: r.empId,
         name: emp ? emp.name : r.raw, date: r.date, code: travelCode(r.movement, r.state),
         flight: r.flight, source: fileName || "pasted email", by: user || "unsigned" }]);
     });
@@ -3079,7 +3091,7 @@ function ManualTravel({ employees, setCell, setTravel, user }) {
     const emp = employees.find((e) => e.id === Number(empId));
     const code = travelCode(mv, state);
     setCell(Number(empId), date, code, "manual travel entry", { validate: true });
-    setTravel((t) => [...t, { id: Date.now(), empId: Number(empId), name: emp ? emp.name : "?",
+    setTravel((t) => [...t, { id: uid("T"), empId: Number(empId), name: emp ? emp.name : "?",
       date, code, flight, source: "manual entry", by: user || "unsigned" }]);
   };
 

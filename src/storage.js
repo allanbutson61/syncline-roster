@@ -145,7 +145,8 @@ async function saveShared(snapshot) {
   });
   Object.keys(wasCells).forEach((k) => { if (!(k in nowCells)) removed.push(splitKey(k)); });
 
-  chunked(changed).forEach((part) => jobs.push(supabase.from("roster_cells").upsert(part)));
+  chunked(dedupe(changed, (r) => r.emp_id + "|" + r.the_date, "roster day"))
+    .forEach((part) => jobs.push(supabase.from("roster_cells").upsert(part)));
   for (const [empId, date] of removed) {
     jobs.push(supabase.from("roster_cells").delete().eq("emp_id", empId).eq("the_date", date));
   }
@@ -163,7 +164,8 @@ async function saveShared(snapshot) {
     }
   });
   Object.keys(wasWatch).forEach((k) => { if (!(k in nowWatch)) watchGone.push(splitKey(k)); });
-  chunked(watchUp).forEach((part) => jobs.push(supabase.from("watch_items").upsert(part)));
+  chunked(dedupe(watchUp, (r) => r.emp_id + "|" + r.the_date, "waitlisted seat"))
+    .forEach((part) => jobs.push(supabase.from("watch_items").upsert(part)));
   for (const [empId, date] of watchGone) {
     jobs.push(supabase.from("watch_items").delete().eq("emp_id", empId).eq("the_date", date));
   }
@@ -175,7 +177,8 @@ async function saveShared(snapshot) {
     .filter((e) => wasPeople[e.id] !== JSON.stringify(e))
     .map((e) => ({ id: e.id, data: e, updated_by: snapshot.savedBy,
       updated_at: new Date().toISOString() }));
-  chunked(peopleUp).forEach((part) => jobs.push(supabase.from("people").upsert(part)));
+  chunked(dedupe(peopleUp, (r) => r.id, "personnel"))
+    .forEach((part) => jobs.push(supabase.from("people").upsert(part)));
 
   /* Anyone no longer on the list is removed, so a reseed with fewer people
      does not leave the ones who have gone sitting in the database. */
@@ -199,7 +202,8 @@ async function saveShared(snapshot) {
         up.push({ id, kind, data: r, created_by: r.by || snapshot.savedBy });
       delete wasById[id];
     });
-    chunked(up).forEach((part) => jobs.push(supabase.from("records").upsert(part)));
+    chunked(dedupe(up, (r) => r.id, kind))
+      .forEach((part) => jobs.push(supabase.from("records").upsert(part)));
     chunked(Object.keys(wasById)).forEach((part) =>
       jobs.push(supabase.from("records").delete().in("id", part)));
   });
@@ -246,6 +250,29 @@ function recId(r, kind, i) {
     return "log:" + (r.at || "") + ":" + (r.empId || 0) + ":" + (r.date || "")
       + ":" + (r.kind || "") + ":" + (r.to || "");
   return kind + ":" + i;
+}
+
+/* Postgres will not accept an upsert that carries the same key twice in one
+   statement — it fails with "ON CONFLICT DO UPDATE command cannot affect row a
+   second time". One duplicate anywhere therefore threw away the entire save,
+   and the person lost every change they had made since loading the page.
+
+   Ids are minted uniquely now, but a batch is still collapsed to one row per
+   key before it is sent, so a duplicate can never again cost someone their
+   work. The last one wins, since that is the most recent state. Anything
+   dropped is logged with its key, so a new source of duplicates can be traced
+   rather than silently absorbed. */
+function dedupe(rows, keyOf, what) {
+  const byKey = new Map();
+  const seen = [];
+  rows.forEach((r) => {
+    const k = String(keyOf(r));
+    if (byKey.has(k)) seen.push(k);
+    byKey.set(k, r);
+  });
+  if (seen.length)
+    console.warn(`Merged ${seen.length} duplicate ${what} row(s) before saving:`, seen);
+  return Array.from(byKey.values());
 }
 
 /* Supabase takes these over a URL, so a few hundred ids at once is too many. */
