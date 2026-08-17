@@ -808,7 +808,26 @@ function Roster({ profile }) {
         if (d.travel) setTravel(d.travel);
         if (d.requests) setRequests(d.requests);
         if (d.actions) setActions(d.actions);
-        if (d.log) setLog(d.log);
+        /* Entries written before ids were carried on the record itself have
+           none, and the save layer then falls back to a key built from the
+           time, person, day and value. A bulk edit stamps the same time on
+           many entries, so tens of thousands ended up sharing one key and the
+           log duplicated itself on every save — 39,869 collisions in a single
+           save at its worst. Give them an id here, keeping the same key but
+           numbering repeats, so it is stable across loads rather than tied to
+           position. Once saved, each entry carries its own id and this stops
+           applying to it. */
+        if (d.log) {
+          const seen = new Map();
+          setLog(d.log.map((r) => {
+            if (r.id) return r;
+            const base = "L" + (r.at || "") + ":" + (r.empId || 0) + ":" + (r.date || "")
+              + ":" + (r.kind || "") + ":" + (r.to || "");
+            const n = (seen.get(base) || 0) + 1;
+            seen.set(base, n);
+            return { ...r, id: n === 1 ? base : `${base}#${n}` };
+          }));
+        }
         if (d.thresholds) setThresholds(migrateThresholds(d.thresholds));
         if (d.dismissed) setDismissed(d.dismissed);
         if (d.customPatterns) setCustomPatterns_(d.customPatterns);

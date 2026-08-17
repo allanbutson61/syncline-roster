@@ -87,6 +87,10 @@ const RECORD_KINDS = {
    own query, so this takes a function that builds one rather than a query. */
 const PAGE = 1000;
 
+/* How many change log entries are kept. Matches the limit the app applies to
+   new entries, so the two cannot drift apart. */
+const LOG_KEEP = 800;
+
 async function fetchAll(build, what) {
   const rows = [];
   for (let from = 0; ; from += PAGE) {
@@ -140,7 +144,22 @@ async function loadShared() {
     const field = kindToField[r.kind];
     if (field) lists[field].push(r.data);
   });
-  if (lists.log) lists.log.sort((a, b) => (a.at < b.at ? 1 : -1));
+  /* Newest first, then only as many as the app itself keeps. The app trims new
+     entries to this same number but nothing trimmed what came back, so a log
+     that had grown to forty thousand entries was read into memory whole and
+     written back whole on the next save.
+
+     Trimming here rather than in the app matters: the cache below is set from
+     this same list, so the app and the cache agree and the entries left behind
+     are not mistaken for deletions. They stay in the database, untouched,
+     until they are deliberately cleared out. */
+  if (lists.log) {
+    lists.log.sort((a, b) => (a.at < b.at ? 1 : -1));
+    if (lists.log.length > LOG_KEEP) {
+      console.info(`LOAD: change log — ${lists.log.length} entries, showing the newest ${LOG_KEEP}`);
+      lists.log = lists.log.slice(0, LOG_KEEP);
+    }
+  }
 
   const settings = {};
   settingRows.data.forEach((r) => (settings[r.key] = r.value));
