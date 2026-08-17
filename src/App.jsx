@@ -751,6 +751,32 @@ function Roster({ profile }) {
            The first load is deliberately exempt: that save is what seeds an
            empty database. */
         if (hydrated.current) applyingLoad.current = true;
+
+        /* A reload replaces the roster wholesale. If what arrives disagrees
+           with what is on screen, whatever was on screen is about to vanish —
+           which is what "it changed back a second later" looks like from the
+           other side. Say so, and name the days, so the cause can be seen
+           rather than guessed at. Press F12 and read the Console to see it. */
+        if (hydrated.current && d.overrides) {
+          const onScreen = overridesRef.current || {};
+          const fromDb = d.overrides;
+          const lost = [];
+          Object.keys(onScreen).forEach((k) => {
+            if (onScreen[k] !== fromDb[k]) lost.push(`${k}  screen "${onScreen[k]}" -> database "${fromDb[k] || "none"}"`);
+          });
+          Object.keys(fromDb).forEach((k) => {
+            if (!(k in onScreen)) lost.push(`${k}  screen "none" -> database "${fromDb[k]}"`);
+          });
+          if (lost.length) {
+            console.warn(`ROSTER RELOAD changed ${lost.length} day(s) that were on screen. `
+              + `If you have just made a change and it disappeared, it is one of these:`);
+            lost.slice(0, 40).forEach((l) => console.warn("   " + l));
+            if (lost.length > 40) console.warn(`   ...and ${lost.length - 40} more`);
+          } else {
+            console.info("ROSTER RELOAD matched what was on screen — nothing was overwritten.");
+          }
+        }
+
         /* An empty list means it has not been written yet — keep the seeded
            ones rather than blanking the tab. Applies to the three that are
            seeded from the spreadsheet; the rest start empty legitimately. */

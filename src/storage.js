@@ -248,6 +248,18 @@ async function saveShared(snapshot) {
    .map((r) => ({ ...r, updated_by: snapshot.savedBy, updated_at: new Date().toISOString() }));
   if (settingRows.length) jobs.push(supabase.from("settings").upsert(settingRows));
 
+  /* What this save is about to write. Paired with the reload check in the app,
+     this shows whether a change that vanished was never written, or was
+     written and then read back differently. Press F12 and read the Console. */
+  console.info(`SAVE: ${changed.length} roster day(s) written, ${removed.length} cleared, `
+    + `${peopleUp.length} personnel, ${settingRows.length} setting(s), `
+    + `${jobs.length} request(s) in total`);
+  if (changed.length) {
+    console.info("  days written: " + changed.slice(0, 20)
+      .map((r) => `${r.emp_id}|${r.the_date}=${r.code}`).join("  ")
+      + (changed.length > 20 ? `  ...and ${changed.length - 20} more` : ""));
+  }
+
   const results = await Promise.all(jobs);
   const bad = results.map((r) => r && r.error).find(Boolean);
   if (bad) {
