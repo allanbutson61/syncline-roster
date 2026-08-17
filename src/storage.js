@@ -75,20 +75,43 @@ const RECORD_KINDS = {
   log: "log",
 };
 
+/* Supabase answers a select with at most its "Max rows" setting, a thousand
+   by default, and says nothing about the ones it left behind. The roster keeps
+   one row per person per day, so it passed a thousand long ago: the rows past
+   the cap never arrived, those days read as empty, and an edit to one of them
+   saved correctly and then vanished on the next reload because the reload
+   could not see it. Whoever sorted last — the far end of the alphabet — lost
+   their work the most often.
+
+   Ask for a page at a time until a short page comes back. Each call needs its
+   own query, so this takes a function that builds one rather than a query. */
+const PAGE = 1000;
+
+async function fetchAll(build, what) {
+  const rows = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await build().range(from, from + PAGE - 1);
+    if (error) return { data: null, error };
+    rows.push(...data);
+    if (data.length < PAGE) {
+      if (rows.length > PAGE) console.info(`LOAD: ${what} — ${rows.length} rows over ${Math.ceil(rows.length / PAGE)} pages`);
+      return { data: rows, error: null };
+    }
+  }
+}
+
 async function loadShared() {
+  /* Ordered on purpose, and now doubly so: paging is only coherent if every
+     page is drawn from the same sequence. The order also settles which row
+     wins if a table ever holds two for one key. */
   const [cells, watchRows, peopleRows, recordRows, settingRows] = await Promise.all([
-    /* Ordered on purpose. These are read into objects keyed by person and day,
-       so if the table ever holds more than one row for the same key the last
-       one read wins. Without an ORDER BY the winner is whatever order Postgres
-       happens to return, which can differ between loads — the screen would then
-       show one value, then the other, with no edit in between. */
-    supabase.from("roster_cells").select("emp_id, the_date, code")
-      .order("emp_id").order("the_date"),
-    supabase.from("watch_items").select("emp_id, the_date, code, reason, created_at, created_by")
-      .order("emp_id").order("the_date"),
-    supabase.from("people").select("id, data").order("id"),
-    supabase.from("records").select("id, kind, data, created_at").order("id"),
-    supabase.from("settings").select("key, value"),
+    fetchAll(() => supabase.from("roster_cells").select("emp_id, the_date, code")
+      .order("emp_id").order("the_date"), "roster days"),
+    fetchAll(() => supabase.from("watch_items").select("emp_id, the_date, code, reason, created_at, created_by")
+      .order("emp_id").order("the_date"), "waitlisted seats"),
+    fetchAll(() => supabase.from("people").select("id, data").order("id"), "personnel"),
+    fetchAll(() => supabase.from("records").select("id, kind, data, created_at").order("id"), "records"),
+    fetchAll(() => supabase.from("settings").select("key, value").order("key"), "settings"),
   ]);
 
   const firstError = [cells, watchRows, peopleRows, recordRows, settingRows]
