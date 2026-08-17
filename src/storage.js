@@ -68,10 +68,17 @@ const RECORD_KINDS = {
 
 async function loadShared() {
   const [cells, watchRows, peopleRows, recordRows, settingRows] = await Promise.all([
-    supabase.from("roster_cells").select("emp_id, the_date, code"),
-    supabase.from("watch_items").select("emp_id, the_date, code, reason, created_at, created_by"),
+    /* Ordered on purpose. These are read into objects keyed by person and day,
+       so if the table ever holds more than one row for the same key the last
+       one read wins. Without an ORDER BY the winner is whatever order Postgres
+       happens to return, which can differ between loads — the screen would then
+       show one value, then the other, with no edit in between. */
+    supabase.from("roster_cells").select("emp_id, the_date, code")
+      .order("emp_id").order("the_date"),
+    supabase.from("watch_items").select("emp_id, the_date, code, reason, created_at, created_by")
+      .order("emp_id").order("the_date"),
     supabase.from("people").select("id, data").order("id"),
-    supabase.from("records").select("id, kind, data, created_at"),
+    supabase.from("records").select("id, kind, data, created_at").order("id"),
     supabase.from("settings").select("key, value"),
   ]);
 
@@ -124,7 +131,18 @@ async function loadShared() {
     savedAt: null,
     savedBy: null,
   };
-  last = snapshot;
+  /* Remember what the settings rows actually hold. Without this the comparison
+     in saveShared has nothing to compare against, so all four rows look changed
+     on the first save after every load and get written every time. The settings
+     table is administrator-only, so for a supervisor that write is refused and
+     takes the whole save down with it — and because a failed save does not
+     refresh this cache, every later save fails the same way. */
+  last = { ...snapshot, __settings: {
+    notes: settings.notes || {},
+    thresholds: settings.thresholds || {},
+    dismissed: settings.dismissed || {},
+    customPatterns: settings.customPatterns || {},
+  } };
   return snapshot;
 }
 
@@ -181,9 +199,17 @@ async function saveShared(snapshot) {
     .forEach((part) => jobs.push(supabase.from("people").upsert(part)));
 
   /* Anyone no longer on the list is removed, so a reseed with fewer people
-     does not leave the ones who have gone sitting in the database. */
+     does not leave the ones who have gone sitting in the database.
+
+     Only when the list of people has actually changed. This used to run on
+     every save, including saves that touched nothing but a roster day, which
+     meant a tab holding a stale personnel list could delete somebody another
+     user had just added. */
   const keepIds = (snapshot.employees || []).map((e) => e.id);
-  if (keepIds.length) {
+  const prevIds = (prev.employees || []).map((e) => e.id);
+  const sameIds = keepIds.length === prevIds.length
+    && keepIds.slice().sort().join(",") === prevIds.slice().sort().join(",");
+  if (keepIds.length && !sameIds) {
     jobs.push(supabase.from("people").delete()
       .not("id", "in", `(${keepIds.join(",")})`));
   }

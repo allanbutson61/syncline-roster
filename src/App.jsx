@@ -1455,9 +1455,16 @@ function Roster({ profile }) {
     setNoShows((n) => n.filter((x) => x.id !== id));
   };
 
+  /* The highest id handed out so far this session. `employees` is only as
+     current as the last render, so adding two people in quick succession used
+     to give them both the same id — and two people sharing an id collide in
+     the database. */
+  const lastNewId = useRef(0);
+
   const addPerson = (p) => {
     if (!requireAdmin()) return;
-    const id = Math.max(0, ...employees.map((e) => e.id)) + 1;
+    const id = Math.max(0, ...employees.map((e) => e.id), lastNewId.current) + 1;
+    lastNewId.current = id;
     const pos = (p.position || "").toLowerCase();
     const person = {
       id, name: p.name, alias: p.alias || "", sap: p.sap || "", category: p.category,
