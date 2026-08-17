@@ -741,6 +741,18 @@ function Roster({ profile }) {
     setSync((s) => ({ ...s, state: "loading" }));
     try {
       const d = await loadRoster();
+
+      /* Somebody made a change while this was in flight. Every guard against
+         reloading over unsaved work is checked before the fetch starts, so
+         this is the one place it can still happen — and applying what came
+         back would wipe work that has not reached the database yet. Leave the
+         screen alone; the save already scheduled will write it, and the next
+         reload picks up whatever else has changed. */
+      if (hydrated.current && dirty.current) {
+        setSync((s) => ({ ...s, state: "ok" }));
+        return;
+      }
+
       if (d) {
         /* Everything set below is watched by the save effect. Left alone, a
            reload marks the tab dirty and schedules a save of data that has
@@ -877,7 +889,13 @@ function Roster({ profile }) {
         setSync((s) => ({ ...s, state: "error", why: lastSaveError() }));
       }
     }, 900);
-    return () => clearTimeout(saveTimer.current);
+    /* No cleanup here on purpose. React runs an effect's cleanup before every
+       re-run, so clearing the timer there cancelled the pending save whenever
+       anything re-rendered — and once this effect learned to skip the renders a
+       reload causes, there was nothing left to put the timer back. A change
+       made in the second before a reload landed was dropped without a trace:
+       on screen, absent from the database, no error anywhere. Debouncing is
+       handled by the clearTimeout above, which runs on every real change. */
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employees, overrides, leaveRecords, travel, requests, actions, thresholds, dismissed, customPatterns, noShows, watch, notes, retry]);
 
