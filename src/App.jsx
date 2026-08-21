@@ -103,6 +103,62 @@ const LEAVE_CODES = Object.keys(CODES).filter((c) => CODES[c].leave);
 const isOnSite = (c) => !!(c && CODES[c] && CODES[c].onsite);
 const codeText = (c) => (c && CODES[c] && CODES[c].display) || c || "";
 const isWorkDay = (c) => c === "1" || c === "NS";
+
+/* Ways of asking what somebody is doing on one particular day — "who is flying
+   in on the 20th", "who is on leave that week". Kept next to the codes so the
+   menu and the matching cannot drift apart. A day trip counts as both an
+   arrival and a departure, because it is both. */
+const isFlight = (m) => (m.movement || "")[0] === "F" || m.movement === "DT";
+const arrives = (m) => m.dir === "IN" || m.dir === "DAY";
+const departs = (m) => m.dir === "OUT" || m.dir === "DAY";
+
+const STATUS_GROUPS = [
+  { id: "flyin",  section: "Travel", label: "Flying in",
+    test: (m) => !!m && isFlight(m) && arrives(m) },
+  { id: "flyout", section: "Travel", label: "Flying out",
+    test: (m) => !!m && isFlight(m) && departs(m) },
+  { id: "in",     section: "Travel", label: "Arriving — fly or drive",
+    test: (m) => !!m && arrives(m) },
+  { id: "out",    section: "Travel", label: "Leaving — fly or drive",
+    test: (m) => !!m && departs(m) },
+  { id: "travel", section: "Travel", label: "Any travel day",
+    test: (m) => !!m && m.group === "Travel" },
+  { id: "leave",  section: "Where they are", label: "On leave — any kind",
+    test: (m) => !!m && !!m.leave },
+  { id: "site",   section: "Where they are", label: "On site",
+    test: (m) => !!m && !!m.onsite },
+  { id: "off",    section: "Where they are", label: "Off site",
+    test: (m) => !m || !m.onsite },
+];
+
+/* `want` is "" for everyone, "g:<id>" for one of the groups above, or a code.
+
+   `onLeave` is the leave register's code for that day, which can sit alongside
+   a travel code — the roster shows those days as "FIA/AL". Somebody flying out
+   on the first day of their annual leave is on leave, so a search for leave has
+   to find them even though the cell reads as travel. */
+const matchesStatus = (code, want, onLeave) => {
+  if (!want) return true;
+  const meta = code ? CODES[code] : null;
+  if (want.startsWith("g:")) {
+    const g = STATUS_GROUPS.find((x) => x.id === want.slice(2));
+    if (!g) return true;
+    if (g.id === "leave" && onLeave) return true;
+    return g.test(meta);
+  }
+  if (code === want) return true;
+  return onLeave === want && !!(CODES[want] && CODES[want].leave);
+};
+
+/* How the chosen status reads back in a sentence. */
+const statusLabel = (want) => {
+  if (!want) return "";
+  if (want.startsWith("g:")) {
+    const g = STATUS_GROUPS.find((x) => x.id === want.slice(2));
+    return g ? g.label.toLowerCase() : want;
+  }
+  return CODES[want] ? CODES[want].label.toLowerCase() : want;
+};
 const travelState = (c) => (c && CODES[c] ? CODES[c].travelState : null);
 const movementOf = (c) => (c && CODES[c] ? CODES[c].movement : null);
 const dirOf = (c) => (c && CODES[c] ? CODES[c].dir : null);
@@ -701,6 +757,10 @@ function Roster({ profile }) {
   const [crewFilter, setCrewFilter] = useState("All");
   const [catFilter, setCatFilter] = useState("All");
   const [search, setSearch] = useState("");
+  /* A status asked about one particular day, rather than a property of the
+     person — checking a flight manifest, or seeing who is away that week. */
+  const [statusOn, setStatusOn] = useState(startOn);
+  const [statusFilter, setStatusFilter] = useState("");
   const [picked, setPicked] = useState([]);
   const [sync, setSync] = useState({ state: "idle", at: null, by: null });
   const [confirm, setConfirm] = useState(null);
@@ -1756,6 +1816,8 @@ function Roster({ profile }) {
     if (livePicked.length) return livePicked.includes(e.id);
     if (crewFilter !== "All" && e.crew !== crewFilter) return false;
     if (catFilter !== "All" && e.category !== catFilter) return false;
+    if (statusFilter && !matchesStatus(codeFor(e, statusOn), statusFilter,
+      leaveDays[e.id + "|" + statusOn])) return false;
     if (search.trim()) {
       const q = search.toLowerCase();
       if (!(e.name.toLowerCase().includes(q) || (e.alias || "").toLowerCase().includes(q)
@@ -1891,7 +1953,8 @@ function Roster({ profile }) {
           setGridDays, cellW, setCellW, codeFor, setCell, brush, setBrush, painting, setPainting, daily, dayIndex,
           undo, undoStack,
           thresholds, crews, cats, crewFilter, setCrewFilter, catFilter, setCatFilter, search,
-          setSearch, picked, setPicked, focusDate, setFocusDate, overrides, menu, setMenu, anomalies }} />}
+          setSearch, statusOn, setStatusOn, statusFilter, setStatusFilter,
+          picked, setPicked, focusDate, setFocusDate, overrides, menu, setMenu, anomalies }} />}
         {view === "leave" && <Leave {...{ employees, leaveRecords, addLeave, removeLeave, focusDate,
           missingLeave, reinstateLeave, unregisteredLeave, registerLeave }} />}
         {view === "travel" && <Travel {...{ employees, travel, setTravel, setCell, actions, user,
@@ -2174,7 +2237,8 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
 function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, gridStart, setGridStart, gridDays, setGridDays, cellW,
   setCellW, codeFor, undo, undoStack,
   setCell, brush, setBrush, painting, setPainting, daily, dayIndex, thresholds, crews, cats,
-  crewFilter, setCrewFilter, catFilter, setCatFilter, search, setSearch, picked, setPicked,
+  crewFilter, setCrewFilter, catFilter, setCatFilter, search, setSearch,
+  statusOn, setStatusOn, statusFilter, setStatusFilter, picked, setPicked,
   focusDate, setFocusDate, overrides, menu, setMenu, anomalies }) {
 
   const [showPicker, setShowPicker] = useState(false);
@@ -2246,15 +2310,53 @@ function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, g
           <select value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>
             {cats.map((c) => <option key={c} value={c}>{c === "All" ? "All roles" : c}</option>)}
           </select>
+
+          {/* Who is doing a particular thing on a particular day — checking a
+              flight manifest, or seeing who is away. */}
+          <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>ON</span>
+          <input type="date" value={statusOn} style={{ width: 148 }}
+            title="The day the status is checked against"
+            onChange={(e) => e.target.value && setStatusOn(e.target.value)} />
+          <select value={statusFilter} style={{ maxWidth: 240 }}
+            title="Show only the people with this status on that day"
+            onChange={(e) => setStatusFilter(e.target.value)}>
+            <option value="">Any status</option>
+            {["Travel", "Where they are"].map((sec) => (
+              <optgroup key={sec} label={sec}>
+                {STATUS_GROUPS.filter((g) => g.section === sec).map((g) => (
+                  <option key={g.id} value={"g:" + g.id}>{g.label}</option>
+                ))}
+              </optgroup>
+            ))}
+            {["Travel", "Leave", "Site", "Other"].map((g) => {
+              const codes = Object.keys(CODES).filter((c) => CODES[c].group === g);
+              if (!codes.length) return null;
+              return (
+                <optgroup key={"exact-" + g} label={`Exactly one code — ${g}`}>
+                  {codes.map((c) => (
+                    <option key={c} value={c}>{codeText(c)} — {CODES[c].label}</option>
+                  ))}
+                </optgroup>
+              );
+            })}
+          </select>
+          {statusFilter && !gridDates.includes(statusOn) && (
+            <Btn small onClick={() => setGridStart(addDays(statusOn, -2))}
+              title="That day is outside the dates on screen">
+              Show {fmtShort(statusOn)}
+            </Btn>
+          )}
+
           <Btn small active={showPicker} onClick={() => setShowPicker(!showPicker)}>
             {picked.length ? `Pick people (${picked.length})` : "Pick people"}
           </Btn>
-          {(picked.length > 0 || search.trim() || crewFilter !== "All" || catFilter !== "All") && (
+          {(picked.length > 0 || search.trim() || crewFilter !== "All" || catFilter !== "All" || statusFilter) && (
             <Btn small danger onClick={() => { setPicked([]); setSearch("");
-              setCrewFilter("All"); setCatFilter("All"); }}>Show everyone</Btn>
+              setCrewFilter("All"); setCatFilter("All"); setStatusFilter(""); }}>Show everyone</Btn>
           )}
           <span style={{ fontFamily: mono, fontSize: 11, color: C.dim, marginLeft: "auto" }}>
-            showing {visibleEmployees.length} of {employees.length}</span>
+            showing {visibleEmployees.length} of {employees.length}
+            {statusFilter ? ` · ${statusLabel(statusFilter)} on ${fmtShort(statusOn)}` : ""}</span>
           <Btn primary onClick={() => {
             const head = ["Employee", "SAP No", "Crew", "Pattern", "Category", "Position"]
               .concat(gridDates.map((d) => fmtShort(d)));
@@ -2393,10 +2495,11 @@ function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, g
                 {picked.length ? " — people have been picked from the list" : ""}
                 {search.trim() ? ` — the find box says "${search.trim()}"` : ""}
                 {crewFilter !== "All" ? ` — crew ${crewFilter} only` : ""}
-                {catFilter !== "All" ? ` — ${catFilter} only` : ""}.
+                {catFilter !== "All" ? ` — ${catFilter} only` : ""}
+                {statusFilter ? ` — nobody is ${statusLabel(statusFilter)} on ${fmtLong(statusOn)}` : ""}.
               </div>
               <Btn primary onClick={() => { setPicked([]); setSearch("");
-                setCrewFilter("All"); setCatFilter("All"); }}>Show everyone</Btn>
+                setCrewFilter("All"); setCatFilter("All"); setStatusFilter(""); }}>Show everyone</Btn>
             </div>
           )}
 
