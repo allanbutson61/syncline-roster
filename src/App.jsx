@@ -2032,88 +2032,6 @@ function Roster({ profile }) {
     return true;
   });
 
-  /* ---- Day check ----
-     Working down a list against an FMG manifest or the sign-in sheet. The ticks
-     are a counting aid for the person holding the paper, not a record: they are
-     kept in the page only and cleared the moment the day or the status changes,
-     so a tick can never be mistaken later for evidence that somebody checked. */
-  const [ticked, setTicked] = useState({});
-  const [showCheck, setShowCheck] = useState(true);
-  const [copied, setCopied] = useState(false);
-  const [printBlocked, setPrintBlocked] = useState(false);
-  useEffect(() => { setTicked({}); }, [statusOn, statusFilter]);
-
-  const checkRows = useMemo(() => {
-    if (!statusFilter) return [];
-    return visibleEmployees.map((e) => {
-      const code = codeFor(e, statusOn);
-      const onLeave = leaveDays[e.id + "|" + statusOn];
-      return { emp: e, code,
-        text: [codeText(code) || "—", onLeave && onLeave !== code ? onLeave : null]
-          .filter(Boolean).join(" / ") };
-    });
-  }, [visibleEmployees, statusFilter, statusOn, codeFor, leaveDays]);
-
-  const tickedCount = checkRows.filter((r) => ticked[r.emp.id]).length;
-
-  const checkTitle = statusFilter
-    ? `${statusLabel(statusFilter)} — ${fmtLong(statusOn)}` : "";
-
-  const checkLines = () => checkRows.map((r, i) =>
-    `${String(i + 1).padStart(2, " ")}. ${ticked[r.emp.id] ? "[x]" : "[ ]"} `
-    + `${r.emp.name}${r.emp.sap ? "  (" + r.emp.sap + ")" : ""}  ${r.text}`);
-
-  const copyCheck = () => {
-    const text = [`Syncline Haulage — ${checkTitle}`,
-      `${checkRows.length} ${checkRows.length === 1 ? "person" : "people"}`, ""]
-      .concat(checkLines()).join("\n");
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(
-        () => setCopied(true), () => setCopied(false));
-      setTimeout(() => setCopied(false), 2500);
-    }
-  };
-
-  const printCheck = () => {
-    const esc = (t) => String(t == null ? "" : t)
-      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-    const body = checkRows.map((r) => `<tr>
-      <td class="box"></td>
-      <td>${esc(r.emp.name)}</td>
-      <td class="m">${esc(r.emp.sap || "")}</td>
-      <td>${esc(r.emp.position || "")}</td>
-      <td class="m">${esc(r.emp.crew || "")}</td>
-      <td class="m">${esc(r.text)}</td></tr>`).join("");
-    const html = `<!doctype html><html><head><meta charset="utf-8">
-      <title>${esc(checkTitle)}</title><style>
-      body { font-family: Helvetica, Arial, sans-serif; color: #312122; margin: 24px; }
-      h1 { font-size: 16px; margin: 0 0 2px; text-transform: uppercase; letter-spacing: .08em; }
-      .sub { font-size: 11px; color: #7A6A64; margin-bottom: 14px; }
-      table { border-collapse: collapse; width: 100%; font-size: 11.5px; }
-      th { text-align: left; border-bottom: 1.5px solid #312122; padding: 5px 6px;
-           font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
-      td { border-bottom: 1px solid #E5DED8; padding: 6px; }
-      td.box { width: 20px; }
-      td.box:after { content: ""; display: block; width: 13px; height: 13px;
-                     border: 1.2px solid #312122; }
-      .m { font-family: "Courier New", monospace; }
-      .foot { margin-top: 18px; font-size: 10.5px; color: #7A6A64; }
-      </style></head><body>
-      <h1>Syncline Haulage — ${esc(checkTitle)}</h1>
-      <div class="sub">${checkRows.length} ${checkRows.length === 1 ? "person" : "people"}
-        · printed ${esc(fmtStamp(nowStamp()))}</div>
-      <table><thead><tr><th></th><th>Name</th><th>SAP</th><th>Position</th>
-        <th>Crew</th><th>Status</th></tr></thead><tbody>${body}</tbody></table>
-      <div class="foot">Checked by ________________________  Date ____________</div>
-      </body></html>`;
-    const w = window.open("", "_blank");
-    if (!w) { setPrintBlocked(true); setTimeout(() => setPrintBlocked(false), 6000); return; }
-    w.document.write(html);
-    w.document.close();
-    w.focus();
-    setTimeout(() => w.print(), 250);
-  };
-
   const tabs = [["dash","Dashboard"],["grid","Roster"],["leave","Leave"],["travel","Travel"],
     ["requests", pendingRequests ? `Requests (${pendingRequests})` : "Requests"],
     ["people","People"],["flights","Flights"],["histogram","Histogram"],["noshow","No shows"],
@@ -2533,6 +2451,89 @@ function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, g
   focusDate, setFocusDate, overrides, menu, setMenu, anomalies }) {
 
   const [showPicker, setShowPicker] = useState(false);
+
+  /* ---- Day check ----
+     Working down a list against an FMG manifest or the sign-in sheet. The ticks
+     are a counting aid for the person holding the paper, not a record: they are
+     kept in the page only and cleared the moment the day or the status changes,
+     so a tick can never be mistaken later for evidence that somebody checked. */
+  const [ticked, setTicked] = useState({});
+  const [showCheck, setShowCheck] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const [printBlocked, setPrintBlocked] = useState(false);
+  useEffect(() => { setTicked({}); }, [statusOn, statusFilter]);
+
+  const checkRows = useMemo(() => {
+    if (!statusFilter) return [];
+    return visibleEmployees.map((e) => {
+      const code = codeFor(e, statusOn);
+      const onLeave = leaveDays[e.id + "|" + statusOn];
+      return { emp: e, code,
+        text: [codeText(code) || "—", onLeave && onLeave !== code ? onLeave : null]
+          .filter(Boolean).join(" / ") };
+    });
+  }, [visibleEmployees, statusFilter, statusOn, codeFor, leaveDays]);
+
+  const tickedCount = checkRows.filter((r) => ticked[r.emp.id]).length;
+
+  const checkTitle = statusFilter
+    ? `${statusLabel(statusFilter)} — ${fmtLong(statusOn)}` : "";
+
+  const checkLines = () => checkRows.map((r, i) =>
+    `${String(i + 1).padStart(2, " ")}. ${ticked[r.emp.id] ? "[x]" : "[ ]"} `
+    + `${r.emp.name}${r.emp.sap ? "  (" + r.emp.sap + ")" : ""}  ${r.text}`);
+
+  const copyCheck = () => {
+    const text = [`Syncline Haulage — ${checkTitle}`,
+      `${checkRows.length} ${checkRows.length === 1 ? "person" : "people"}`, ""]
+      .concat(checkLines()).join("\n");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => setCopied(true), () => setCopied(false));
+      setTimeout(() => setCopied(false), 2500);
+    }
+  };
+
+  const printCheck = () => {
+    const esc = (t) => String(t == null ? "" : t)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const body = checkRows.map((r) => `<tr>
+      <td class="box"></td>
+      <td>${esc(r.emp.name)}</td>
+      <td class="m">${esc(r.emp.sap || "")}</td>
+      <td>${esc(r.emp.position || "")}</td>
+      <td class="m">${esc(r.emp.crew || "")}</td>
+      <td class="m">${esc(r.text)}</td></tr>`).join("");
+    const html = `<!doctype html><html><head><meta charset="utf-8">
+      <title>${esc(checkTitle)}</title><style>
+      body { font-family: Helvetica, Arial, sans-serif; color: #312122; margin: 24px; }
+      h1 { font-size: 16px; margin: 0 0 2px; text-transform: uppercase; letter-spacing: .08em; }
+      .sub { font-size: 11px; color: #7A6A64; margin-bottom: 14px; }
+      table { border-collapse: collapse; width: 100%; font-size: 11.5px; }
+      th { text-align: left; border-bottom: 1.5px solid #312122; padding: 5px 6px;
+           font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+      td { border-bottom: 1px solid #E5DED8; padding: 6px; }
+      td.box { width: 20px; }
+      td.box:after { content: ""; display: block; width: 13px; height: 13px;
+                     border: 1.2px solid #312122; }
+      .m { font-family: "Courier New", monospace; }
+      .foot { margin-top: 18px; font-size: 10.5px; color: #7A6A64; }
+      </style></head><body>
+      <h1>Syncline Haulage — ${esc(checkTitle)}</h1>
+      <div class="sub">${checkRows.length} ${checkRows.length === 1 ? "person" : "people"}
+        · printed ${esc(fmtStamp(nowStamp()))}</div>
+      <table><thead><tr><th></th><th>Name</th><th>SAP</th><th>Position</th>
+        <th>Crew</th><th>Status</th></tr></thead><tbody>${body}</tbody></table>
+      <div class="foot">Checked by ________________________  Date ____________</div>
+      </body></html>`;
+    const w = window.open("", "_blank");
+    if (!w) { setPrintBlocked(true); setTimeout(() => setPrintBlocked(false), 6000); return; }
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), 250);
+  };
+
   const NAMEW = 190;
   const CW = cellW;
   const gridDates = Array.from({ length: gridDays }, (_, i) => addDays(gridStart, i));
