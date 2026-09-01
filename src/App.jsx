@@ -99,6 +99,13 @@ Object.keys(MOVEMENTS).forEach((mv) => {
   });
 });
 
+/* Filling the days around a confirmed flight must never undo a decision
+   somebody made by hand. Night shift, leave, training, stand-down and the
+   like are choices; a blank day, R & R, a rostered day off, or the same
+   shift written again are not. Only those get overwritten. */
+const fillableOnSite = (c, shift) => !c || c === "RR" || c === "RDO" || c === shift;
+const fillableOffSite = (c) => !c || c === "1" || c === "NS" || c === "RR" || c === "RDO";
+
 const LEAVE_CODES = Object.keys(CODES).filter((c) => CODES[c].leave);
 const isOnSite = (c) => !!(c && CODES[c] && CODES[c].onsite);
 const codeText = (c) => (c && CODES[c] && CODES[c].display) || c || "";
@@ -1071,6 +1078,13 @@ function Roster({ profile }) {
   useEffect(() => { codeForRef.current = codeFor; }, [codeFor]);
   const overridesRef = useRef(overrides);
   useEffect(() => { overridesRef.current = overrides; }, [overrides]);
+  /* The clash check used to read the render's copy of the register, which is a
+     tick behind. Two quick clicks on Add leave both saw an empty list and both
+     saved, which is how one person ended up with the same week entered three
+     times over. This ref is updated the instant a record is added, so the
+     second click sees the first. */
+  const leaveRecordsRef = useRef(leaveRecords);
+  useEffect(() => { leaveRecordsRef.current = leaveRecords; }, [leaveRecords]);
 
   const undo = () => {
     if (!requireUser()) return;
@@ -1257,16 +1271,45 @@ function Roster({ profile }) {
     setView("grid");
   };
 
-  const leaveClash = (rec) =>
-    leaveRecords.find((r) => r.empId === rec.empId && r.from <= rec.to && r.to >= rec.from);
+  const leaveClashes = (rec, ignoreId) =>
+    leaveRecordsRef.current.filter((r) => r.id !== ignoreId
+      && r.empId === rec.empId && r.from <= rec.to && r.to >= rec.from);
+
+  /* Reads back as a sentence the office can act on, naming every entry in the
+     way rather than only the first. */
+  const clashMessage = (rec, list) => {
+    const emp = employees.find((e) => e.id === rec.empId);
+    const who = emp ? emp.name : "That person";
+    const same = list.filter((r) => r.from === rec.from && r.to === rec.to && r.code === rec.code);
+    const lead = same.length
+      ? `${who} already has exactly this ${rec.code} entry`
+      : `${who} already has leave across those dates`;
+    return `${lead}. `
+      + list.slice(0, 6).map((r) => `${r.code} ${fmtShort(r.from)} to ${fmtShort(r.to)}`
+        + (r.by ? ` (entered by ${r.by})` : "")).join("; ")
+      + (list.length > 6 ? `; and ${list.length - 6} more` : "")
+      + `. Edit or remove the existing entry rather than adding another.`;
+  };
+
+  /* Days a record covers that no other remaining record also covers. Removing
+     one of several overlapping entries must not strip the leave off the roster
+     while the others still say the person is away. */
+  const daysOnlyHeldBy = (rec, list) => {
+    const others = list.filter((r) => r.id !== rec.id && r.empId === rec.empId && r.code === rec.code);
+    const mine = [], shared = [];
+    rangeDays(rec.from, rec.to).forEach((d) => {
+      if (others.some((r) => r.from <= d && r.to >= d)) shared.push(d);
+      else mine.push(d);
+    });
+    return { mine, shared };
+  };
 
   const addLeave = (rec) => {
     if (!requireUser()) return { error: "Select your name at the top before making changes." };
-    const clash = leaveClash(rec);
-    if (clash) return { error:
-      `${employees.find((e) => e.id === rec.empId) ? employees.find((e) => e.id === rec.empId).name : "That person"} ` +
-      `already has ${clash.code} from ${fmtShort(clash.from)} to ${fmtShort(clash.to)}. ` +
-      `Remove or shorten that entry first.` };
+    if (!rec.from || !rec.to) return { error: "Both dates are needed." };
+    if (rec.to < rec.from) return { error: "The end date is before the start date." };
+    const clashes = leaveClashes(rec);
+    if (clashes.length) return { error: clashMessage(rec, clashes), clashes };
     const emp = employees.find((e) => e.id === rec.empId);
     const days = rangeDays(rec.from, rec.to);
     const impacted = [];
@@ -1279,8 +1322,10 @@ function Roster({ profile }) {
     setUndoStack((u) => [{ overrides: overridesRef.current,
       label: `${emp ? emp.name : "?"} leave ${fmtShort(rec.from)}–${fmtShort(rec.to)}` }, ...u].slice(0, 40));
     setOverrides((o) => { const n = { ...o }; days.forEach((d) => (n[rec.empId + "|" + d] = rec.code)); return n; });
-    const id = "L" + Date.now();
-    setLeaveRecords((r) => [...r, { ...rec, id, by: user || "unsigned", at: nowStamp() }]);
+    const saved = { ...rec, id: uid("L"), by: user || "unsigned", at: nowStamp() };
+    /* the ref moves now, not next render, so a second click is caught */
+    leaveRecordsRef.current = [...leaveRecordsRef.current, saved];
+    setLeaveRecords((r) => [...r, saved]);
     record({ kind: "leave", empId: rec.empId, name: emp ? emp.name : "?", date: `${rec.from} → ${rec.to}`,
       from: "roster", to: `${rec.code} (${days.length}d)`, why: rec.note || "leave entered" });
     const ok = { error: null };
@@ -1343,10 +1388,44 @@ function Roster({ profile }) {
       const now = codeFor(emp, iso);
       if (now === leaveDays[k]) return;
       if (movementOf(now)) return;
-      out.push({ empId, iso, want: leaveDays[k], now: now || "—", name: emp.name });
+      out.push({ empId, iso, want: leaveDays[k], now: now || "—", name: emp.name,
+        key: "LM|" + empId + "|" + iso });
     });
     return out.sort((a, b) => (a.iso < b.iso ? -1 : 1));
   }, [leaveDays, employees, codeFor]);
+
+  /* Some of these are deliberate — leave that was taken off the roster on
+     purpose while the register still holds the record. Dismissing hides the
+     day without touching either side, and dismissals are saved so the warning
+     does not come back on the next load. */
+  const missingLeaveShown = useMemo(
+    () => missingLeave.filter((x) => !dismissed[x.key]), [missingLeave, dismissed]);
+  const missingLeaveHidden = missingLeave.length - missingLeaveShown.length;
+
+  const dismissLeaveMismatch = (rows, why) => {
+    if (!requireUser()) return;
+    const list = Array.isArray(rows) ? rows : [rows];
+    if (!list.length) return;
+    setDismissed((d) => {
+      const n = { ...d };
+      list.forEach((x) => (n[x.key] = { by: user || "unsigned", at: nowStamp() }));
+      return n;
+    });
+    const people = Array.from(new Set(list.map((x) => x.name)));
+    record({ kind: "leave", empId: list.length === 1 ? list[0].empId : 0,
+      name: people.length === 1 ? people[0] : `${people.length} people`,
+      date: list.length === 1 ? list[0].iso : `${list[0].iso} → ${list[list.length - 1].iso}`,
+      from: "leave mismatch warning", to: `${list.length} day(s) dismissed`,
+      why: why || "warning dismissed — the roster is right as it stands" });
+  };
+
+  const restoreLeaveMismatches = () => {
+    setDismissed((d) => {
+      const n = {};
+      Object.keys(d).forEach((k) => { if (!k.startsWith("LM|") && !k.startsWith("UL|")) n[k] = d[k]; });
+      return n;
+    });
+  };
 
   /* The other direction: leave painted straight onto the roster never reaches
      the register, so it is invisible to anyone looking there. Find runs of a
@@ -1361,7 +1440,8 @@ function Roster({ profile }) {
         const covered = (leaveRecords || []).some((r) => r.empId === emp.id
           && r.code === code && r.from <= start && r.to >= end);
         if (!covered) out.push({ empId: emp.id, name: emp.name, code, from: start, to: end,
-          days: diffDays(end, start) + 1 });
+          days: diffDays(end, start) + 1,
+          key: "UL|" + emp.id + "|" + code + "|" + start + "|" + end });
         start = null; code = null;
       };
       DATES.forEach((iso) => {
@@ -1377,50 +1457,124 @@ function Roster({ profile }) {
     return out.sort((a, b) => (a.from < b.from ? -1 : 1));
   }, [employees, codeFor, leaveRecords]);
 
+  const unregisteredLeaveShown = useMemo(
+    () => unregisteredLeave.filter((x) => !dismissed[x.key]), [unregisteredLeave, dismissed]);
+  const unregisteredLeaveHidden = unregisteredLeave.length - unregisteredLeaveShown.length;
+
+  const dismissUnregistered = (rows) => {
+    if (!requireUser()) return;
+    const list = Array.isArray(rows) ? rows : [rows];
+    if (!list.length) return;
+    setDismissed((d) => {
+      const n = { ...d };
+      list.forEach((x) => (n[x.key] = { by: user || "unsigned", at: nowStamp() }));
+      return n;
+    });
+    record({ kind: "leave", empId: list.length === 1 ? list[0].empId : 0,
+      name: list.length === 1 ? list[0].name : `${list.length} blocks`,
+      date: `${list[0].from} → ${list[list.length - 1].to}`,
+      from: "unregistered leave warning", to: `${list.length} block(s) dismissed`,
+      why: "warning dismissed — not going on the register" });
+  };
+
   const registerLeave = () => {
     if (!requireUser()) return;
-    if (!unregisteredLeave.length) return;
-    const added = unregisteredLeave.map((x) => ({
+    const rows = unregisteredLeaveShown;
+    if (!rows.length) return;
+    const added = rows.map((x) => ({
       id: uid("R"),
       empId: x.empId, code: x.code, from: x.from, to: x.to,
       note: "taken from the roster", by: user || "unsigned", at: nowStamp(),
     }));
     setLeaveRecords((r) => [...r, ...added]);
     record({ kind: "leave", empId: 0,
-      name: added.length === 1 ? unregisteredLeave[0].name : `${added.length} blocks`,
-      date: `${unregisteredLeave[0].from} → ${unregisteredLeave[unregisteredLeave.length - 1].to}`,
+      name: added.length === 1 ? rows[0].name : `${added.length} blocks`,
+      date: `${rows[0].from} → ${rows[rows.length - 1].to}`,
       from: "on the roster only", to: `${added.length} added to the register`,
       why: "roster reconciled with the leave register" });
   };
 
   const reinstateLeave = () => {
     if (!requireUser()) return;
-    if (!missingLeave.length) return;
+    const rows = missingLeaveShown;
+    if (!rows.length) return;
     setOverrides((o) => {
       const n = { ...o };
-      missingLeave.forEach((x) => (n[x.empId + "|" + x.iso] = x.want));
+      rows.forEach((x) => (n[x.empId + "|" + x.iso] = x.want));
       return n;
     });
-    const people = Array.from(new Set(missingLeave.map((x) => x.name)));
+    const people = Array.from(new Set(rows.map((x) => x.name)));
     record({ kind: "leave", empId: 0, name: people.length === 1 ? people[0] : `${people.length} people`,
-      date: `${missingLeave[0].iso} → ${missingLeave[missingLeave.length - 1].iso}`,
-      from: "missing from the roster", to: `${missingLeave.length} day(s) reinstated`,
+      date: `${rows[0].iso} → ${rows[rows.length - 1].iso}`,
+      from: "missing from the roster", to: `${rows.length} day(s) reinstated`,
       why: "leave register reconciled with the roster" });
   };
 
+  /* Removing one of several overlapping entries used to clear the leave off the
+     roster for its whole range, even where another record still covered those
+     days — so deleting a duplicate took the leave with it. Days another record
+     still holds are now left showing the leave. */
   const removeLeave = (id) => {
-    if (!requireUser()) return;
-    const rec = leaveRecords.find((r) => r.id === id);
-    if (!rec) return;
+    if (!requireUser()) return { error: "Select your name at the top before making changes." };
+    const list = leaveRecordsRef.current;
+    const rec = list.find((r) => r.id === id);
+    if (!rec) return { error: "That record is no longer there." };
     const emp = employees.find((e) => e.id === rec.empId);
+    const { mine, shared } = daysOnlyHeldBy(rec, list);
+
+    setUndoStack((u) => [{ overrides: overridesRef.current,
+      label: `${emp ? emp.name : "?"} leave removed ${fmtShort(rec.from)}` }, ...u].slice(0, 40));
     setOverrides((o) => {
       const n = { ...o };
-      rangeDays(rec.from, rec.to).forEach((d) => { if (n[rec.empId + "|" + d] === rec.code) delete n[rec.empId + "|" + d]; });
+      mine.forEach((d) => { if (n[rec.empId + "|" + d] === rec.code) delete n[rec.empId + "|" + d]; });
       return n;
     });
+    leaveRecordsRef.current = list.filter((x) => x.id !== id);
     setLeaveRecords((r) => r.filter((x) => x.id !== id));
     record({ kind: "leave", empId: rec.empId, name: emp ? emp.name : "?", date: `${rec.from} → ${rec.to}`,
-      from: rec.code, to: "back to pattern", why: "leave cancelled" });
+      from: rec.code, to: shared.length && !mine.length ? "duplicate record deleted"
+        : "back to pattern",
+      why: shared.length
+        ? `leave record removed — ${shared.length} day(s) still covered by another record and left as they are`
+        : "leave cancelled" });
+    return { ok: true, cleared: mine.length, held: shared.length,
+      name: emp ? emp.name : "?", code: rec.code };
+  };
+
+  /* Editing a record: the old days come off (respecting anything another record
+     still covers) and the new range goes on, so the roster follows the fix. */
+  const updateLeave = (id, patch) => {
+    if (!requireUser()) return { error: "Select your name at the top before making changes." };
+    const list = leaveRecordsRef.current;
+    const rec = list.find((r) => r.id === id);
+    if (!rec) return { error: "That record is no longer there." };
+    const next = { ...rec, ...patch };
+    if (!next.from || !next.to) return { error: "Both dates are needed." };
+    if (next.to < next.from) return { error: "The end date is before the start date." };
+    const clashes = leaveClashes(next, id);
+    if (clashes.length) return { error: clashMessage(next, clashes), clashes };
+
+    const emp = employees.find((e) => e.id === rec.empId);
+    const { mine } = daysOnlyHeldBy(rec, list);
+    const newDays = rangeDays(next.from, next.to);
+
+    setUndoStack((u) => [{ overrides: overridesRef.current,
+      label: `${emp ? emp.name : "?"} leave edited ${fmtShort(rec.from)}` }, ...u].slice(0, 40));
+    setOverrides((o) => {
+      const n = { ...o };
+      mine.forEach((d) => { if (n[rec.empId + "|" + d] === rec.code) delete n[rec.empId + "|" + d]; });
+      newDays.forEach((d) => (n[rec.empId + "|" + d] = next.code));
+      return n;
+    });
+    const saved = { ...next, editedBy: user || "unsigned", editedAt: nowStamp() };
+    leaveRecordsRef.current = list.map((x) => (x.id === id ? saved : x));
+    setLeaveRecords((r) => r.map((x) => (x.id === id ? saved : x)));
+    record({ kind: "leave", empId: rec.empId, name: emp ? emp.name : "?",
+      date: `${next.from} → ${next.to}`,
+      from: `${rec.code} ${fmtShort(rec.from)}–${fmtShort(rec.to)}`,
+      to: `${next.code} ${fmtShort(next.from)}–${fmtShort(next.to)}`,
+      why: next.note ? `leave corrected — ${next.note}` : "leave corrected" });
+    return { ok: true, days: newDays.length, name: emp ? emp.name : "?" };
   };
 
   const updateEmployee = (id, patch) => {
@@ -1446,9 +1600,19 @@ function Roster({ profile }) {
   };
 
   /* Applies a batch of confirmed travel and fills the swing between the
-     movements with work days from that person's pattern. */
+     movements with work days from that person's pattern.
+
+     The fill used to write the pattern's shift across every day between the
+     flights, which quietly undid night shift, leave and anything else set by
+     hand — a travel confirmation would put somebody back on days after the
+     office had deliberately moved them to nights. It now writes only into
+     days that carry no decision, and reports how many it stepped over. */
   const applyTravelBatch = (rows) => {
     const now = codeForRef.current;
+    let kept = 0;
+    const keptDetail = [];
+    const keepNote = (empName, d, c) => { kept++;
+      if (keptDetail.length < 40) keptDetail.push(`${empName} ${fmtShort(d)} ${codeText(c)}`); };
     const byEmp = {};
     rows.forEach((r) => {
       if (!r.empId || !r.date) return;
@@ -1480,7 +1644,7 @@ function Roster({ profile }) {
         if (!nextIn) return;
         for (let d = addDays(r.date, 1); d < nextIn.date; d = addDays(d, 1)) {
           const c = now(emp, d);
-          if (c && CODES[c] && (CODES[c].leave || c === "T")) continue;   /* leave stays */
+          if (!fillableOffSite(c)) { keepNote(emp.name, d, c); continue; }
           applyCell(empId, d, "RR", "off site between flights");
         }
       });
@@ -1506,20 +1670,38 @@ function Roster({ profile }) {
         const shift = pat && pat.shift === "NS" ? "NS" : "1";
 
         if (outDate) {
-          for (let d = addDays(r.date, 1); d < outDate; d = addDays(d, 1))
+          for (let d = addDays(r.date, 1); d < outDate; d = addDays(d, 1)) {
+            const c = now(emp, d);
+            if (!fillableOnSite(c, shift)) { keepNote(emp.name, d, c); continue; }
             applyCell(empId, d, shift, "site days filled from pattern");
+          }
           return;
         }
 
         /* no departure anywhere — fill the swing length and flag the fly-out
            as still to request */
         const len = pat && pat.on ? pat.on : 14;
-        for (let i = 1; i < len - 1; i++)
-          applyCell(empId, addDays(r.date, i), shift, "site days filled from pattern");
-        applyCell(empId, addDays(r.date, len - 1), travelCode("FOP", "toRequest"),
-          "return travel still to request");
+        for (let i = 1; i < len - 1; i++) {
+          const d = addDays(r.date, i);
+          const c = now(emp, d);
+          if (!fillableOnSite(c, shift)) { keepNote(emp.name, d, c); continue; }
+          applyCell(empId, d, shift, "site days filled from pattern");
+        }
+        const back = addDays(r.date, len - 1);
+        const backNow = now(emp, back);
+        if (fillableOnSite(backNow, shift)) {
+          applyCell(empId, back, travelCode("FOP", "toRequest"),
+            "return travel still to request");
+        } else keepNote(emp.name, back, backNow);
       });
     });
+
+    if (kept) {
+      record({ kind: "travel", empId: 0, name: `${kept} day(s)`, date: "—",
+        from: "left as they were", to: keptDetail.join(", "),
+        why: "travel applied — days already set by hand were not overwritten" });
+    }
+    return { kept, keptDetail };
   };
 
   const savePattern = (name, seq) => {
@@ -1647,15 +1829,39 @@ function Roster({ profile }) {
       from: "—", to: `${p.category} · ${p.crew} · ${p.pattern}`, why: "person added" });
   };
 
-  const changePattern = (empId, from, pattern, anchor) => {
-    if (!requireAdmin()) return;
+  /* What a pattern change would do, worked out before anything is written so
+     the office can see it and say no. Applying used to happen in silence,
+     which meant a change that did not take could not be told apart from one
+     that did. */
+  const patternChangePreview = (empId, from, pattern, anchor) => {
     const emp = employees.find((e) => e.id === empId);
-    if (!emp) return;
+    if (!emp) return { error: "That person is not on the list." };
+    if (!from || !anchor) return { error: "Both dates are needed." };
+    if (!PATTERN_REGISTRY[pattern]) return { error: `There is no pattern called ${pattern}.` };
     const prev = segmentFor(emp, addDays(from, -1));
+    const already = (emp.patterns || []).find((x) => x.from === from);
+    let cleared = 0, kept = 0;
+    const o = overridesRef.current;
+    Object.keys(o).forEach((k) => {
+      const bar = k.indexOf("|");
+      if (Number(k.slice(0, bar)) !== empId) return;
+      if (k.slice(bar + 1) < from) return;
+      const code = o[k];
+      if (CODES[code] && (CODES[code].leave || CODES[code].travelState === "confirmed")) kept++;
+      else cleared++;
+    });
+    return { emp, prev, already, cleared, kept, pattern, from, anchor,
+      label: PATTERN_REGISTRY[pattern].label };
+  };
+
+  const changePattern = (empId, from, pattern, anchor) => {
+    if (!requireAdmin()) return { error: "Only an administrator can change a roster pattern." };
+    const plan = patternChangePreview(empId, from, pattern, anchor);
+    if (plan.error) return plan;
+    const { emp, prev, cleared, kept } = plan;
     const segs = [...(emp.patterns || []).filter((s) => s.from !== from), { from, pattern, anchor }]
       .sort((a, b) => (a.from < b.from ? -1 : 1));
     setEmployees((es) => es.map((e) => (e.id === empId ? { ...e, patterns: segs } : e)));
-    let kept = 0;
     setUndoStack((u) => [{ overrides: overridesRef.current,
       label: `${emp.name} pattern → ${pattern}` }, ...u].slice(0, 40));
     setOverrides((o) => {
@@ -1667,7 +1873,6 @@ function Roster({ profile }) {
         const code = o[k];
         const protectedCell = !!(CODES[code] && (CODES[code].leave || CODES[code].travelState === "confirmed"));
         if (id === empId && iso >= from && !protectedCell) return;
-        if (id === empId && iso >= from && protectedCell) kept++;
         n[k] = o[k];
       });
       return n;
@@ -1675,6 +1880,7 @@ function Roster({ profile }) {
     record({ kind: "pattern", empId, name: emp.name, date: from,
       from: prev ? prev.pattern : "—", to: `${pattern} (swing starts ${fmtShort(anchor)})`,
       why: kept ? `roster pattern changed — ${kept} approved leave/confirmed travel day(s) kept` : "roster pattern changed" });
+    return { ok: true, name: emp.name, pattern, from, anchor, cleared, kept };
   };
 
   const removePatternSegment = (empId, from) => {
@@ -1826,6 +2032,88 @@ function Roster({ profile }) {
     return true;
   });
 
+  /* ---- Day check ----
+     Working down a list against an FMG manifest or the sign-in sheet. The ticks
+     are a counting aid for the person holding the paper, not a record: they are
+     kept in the page only and cleared the moment the day or the status changes,
+     so a tick can never be mistaken later for evidence that somebody checked. */
+  const [ticked, setTicked] = useState({});
+  const [showCheck, setShowCheck] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const [printBlocked, setPrintBlocked] = useState(false);
+  useEffect(() => { setTicked({}); }, [statusOn, statusFilter]);
+
+  const checkRows = useMemo(() => {
+    if (!statusFilter) return [];
+    return visibleEmployees.map((e) => {
+      const code = codeFor(e, statusOn);
+      const onLeave = leaveDays[e.id + "|" + statusOn];
+      return { emp: e, code,
+        text: [codeText(code) || "—", onLeave && onLeave !== code ? onLeave : null]
+          .filter(Boolean).join(" / ") };
+    });
+  }, [visibleEmployees, statusFilter, statusOn, codeFor, leaveDays]);
+
+  const tickedCount = checkRows.filter((r) => ticked[r.emp.id]).length;
+
+  const checkTitle = statusFilter
+    ? `${statusLabel(statusFilter)} — ${fmtLong(statusOn)}` : "";
+
+  const checkLines = () => checkRows.map((r, i) =>
+    `${String(i + 1).padStart(2, " ")}. ${ticked[r.emp.id] ? "[x]" : "[ ]"} `
+    + `${r.emp.name}${r.emp.sap ? "  (" + r.emp.sap + ")" : ""}  ${r.text}`);
+
+  const copyCheck = () => {
+    const text = [`Syncline Haulage — ${checkTitle}`,
+      `${checkRows.length} ${checkRows.length === 1 ? "person" : "people"}`, ""]
+      .concat(checkLines()).join("\n");
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => setCopied(true), () => setCopied(false));
+      setTimeout(() => setCopied(false), 2500);
+    }
+  };
+
+  const printCheck = () => {
+    const esc = (t) => String(t == null ? "" : t)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const body = checkRows.map((r) => `<tr>
+      <td class="box"></td>
+      <td>${esc(r.emp.name)}</td>
+      <td class="m">${esc(r.emp.sap || "")}</td>
+      <td>${esc(r.emp.position || "")}</td>
+      <td class="m">${esc(r.emp.crew || "")}</td>
+      <td class="m">${esc(r.text)}</td></tr>`).join("");
+    const html = `<!doctype html><html><head><meta charset="utf-8">
+      <title>${esc(checkTitle)}</title><style>
+      body { font-family: Helvetica, Arial, sans-serif; color: #312122; margin: 24px; }
+      h1 { font-size: 16px; margin: 0 0 2px; text-transform: uppercase; letter-spacing: .08em; }
+      .sub { font-size: 11px; color: #7A6A64; margin-bottom: 14px; }
+      table { border-collapse: collapse; width: 100%; font-size: 11.5px; }
+      th { text-align: left; border-bottom: 1.5px solid #312122; padding: 5px 6px;
+           font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
+      td { border-bottom: 1px solid #E5DED8; padding: 6px; }
+      td.box { width: 20px; }
+      td.box:after { content: ""; display: block; width: 13px; height: 13px;
+                     border: 1.2px solid #312122; }
+      .m { font-family: "Courier New", monospace; }
+      .foot { margin-top: 18px; font-size: 10.5px; color: #7A6A64; }
+      </style></head><body>
+      <h1>Syncline Haulage — ${esc(checkTitle)}</h1>
+      <div class="sub">${checkRows.length} ${checkRows.length === 1 ? "person" : "people"}
+        · printed ${esc(fmtStamp(nowStamp()))}</div>
+      <table><thead><tr><th></th><th>Name</th><th>SAP</th><th>Position</th>
+        <th>Crew</th><th>Status</th></tr></thead><tbody>${body}</tbody></table>
+      <div class="foot">Checked by ________________________  Date ____________</div>
+      </body></html>`;
+    const w = window.open("", "_blank");
+    if (!w) { setPrintBlocked(true); setTimeout(() => setPrintBlocked(false), 6000); return; }
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    setTimeout(() => w.print(), 250);
+  };
+
   const tabs = [["dash","Dashboard"],["grid","Roster"],["leave","Leave"],["travel","Travel"],
     ["requests", pendingRequests ? `Requests (${pendingRequests})` : "Requests"],
     ["people","People"],["flights","Flights"],["histogram","Histogram"],["noshow","No shows"],
@@ -1955,14 +2243,17 @@ function Roster({ profile }) {
           thresholds, crews, cats, crewFilter, setCrewFilter, catFilter, setCatFilter, search,
           setSearch, statusOn, setStatusOn, statusFilter, setStatusFilter,
           picked, setPicked, focusDate, setFocusDate, overrides, menu, setMenu, anomalies }} />}
-        {view === "leave" && <Leave {...{ employees, leaveRecords, addLeave, removeLeave, focusDate,
-          missingLeave, reinstateLeave, unregisteredLeave, registerLeave }} />}
+        {view === "leave" && <Leave {...{ employees, leaveRecords, addLeave, removeLeave, updateLeave, focusDate,
+          missingLeave: missingLeaveShown, missingLeaveHidden, dismissLeaveMismatch,
+          restoreLeaveMismatches, reinstateLeave,
+          unregisteredLeave: unregisteredLeaveShown, unregisteredLeaveHidden,
+          dismissUnregistered, registerLeave }} />}
         {view === "travel" && <Travel {...{ employees, travel, setTravel, setCell, actions, user,
           applyTravelBatch, markActionDone, watch, confirmWatch, clearWatch,
           removeTravel }} />}
         {view === "requests" && <Requests {...{ employees, requests, submitRequest, markRequested,
           declineRequest, removeRequest, codeFor, focusDate, problemsFromChanges }} />}
-        {view === "people" && <People {...{ employees, updateEmployee, changePattern,
+        {view === "people" && <People {...{ employees, updateEmployee, changePattern, patternChangePreview,
           removePatternSegment, thresholds, setThresholds, focusDate, addPerson,
           customPatterns, savePattern, deletePattern, loadImported, isAdmin, requireAdmin,
           userName: user }} />}
@@ -2394,6 +2685,85 @@ function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, g
         )}
       </Panel>
 
+      {statusFilter && (
+        <Panel title="Day check"
+          note={`${checkTitle} · ${tickedCount} of ${checkRows.length} ticked`} pad={0}>
+          <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.line}`, background: C.panel2,
+            display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <Btn small onClick={() => setShowCheck(!showCheck)}>{showCheck ? "Hide list" : "Show list"}</Btn>
+            <Btn small disabled={!checkRows.length}
+              onClick={() => setTicked(Object.fromEntries(checkRows.map((r) => [r.emp.id, true])))}>
+              Tick all
+            </Btn>
+            <Btn small disabled={!tickedCount} onClick={() => setTicked({})}>Clear ticks</Btn>
+            <div style={{ width: 1, height: 20, background: C.line }} />
+            <Btn small disabled={!checkRows.length} onClick={printCheck}>Print</Btn>
+            <Btn small disabled={!checkRows.length} onClick={copyCheck}>
+              {copied ? "Copied" : "Copy list"}
+            </Btn>
+            <Btn small disabled={!checkRows.length} onClick={() => downloadCsv(
+              `day-check-${statusOn}.csv`,
+              [[`Syncline Haulage  ${checkTitle}`], [],
+                ["Checked", "Employee", "SAP No", "Position", "Crew", "Status"]]
+                .concat(checkRows.map((r) => [ticked[r.emp.id] ? "Y" : "", r.emp.name,
+                  r.emp.sap || "", r.emp.position || "", r.emp.crew || "", r.text])))}>
+              Export to Excel
+            </Btn>
+            <span style={{ fontFamily: mono, fontSize: 11, color: tickedCount === checkRows.length
+              && checkRows.length ? C.ok : C.dim, marginLeft: "auto" }}>
+              {tickedCount} of {checkRows.length} ticked
+              {checkRows.length > 0 && tickedCount === checkRows.length ? " · all accounted for" : ""}
+            </span>
+          </div>
+
+          {printBlocked && (
+            <div style={{ padding: "9px 14px", background: "#FCEAE7", color: C.red, fontSize: 12.5,
+              borderBottom: `1px solid ${C.line}` }}>
+              The browser blocked the print window. Allow pop-ups for this site, or use Copy list
+              or Export to Excel instead.
+            </div>
+          )}
+
+          {showCheck && (
+            <div style={{ maxHeight: 360, overflowY: "auto" }}>
+              {checkRows.length === 0 && (
+                <div style={{ padding: 16, fontFamily: mono, fontSize: 11.5, color: C.dim }}>
+                  Nobody is {statusLabel(statusFilter)} on {fmtLong(statusOn)}.
+                </div>
+              )}
+              {checkRows.map((r, i) => {
+                const on = !!ticked[r.emp.id];
+                return (
+                  <label key={r.emp.id} style={{ display: "flex", gap: 10, alignItems: "center",
+                    padding: "6px 14px", borderBottom: `1px solid ${C.line}`, cursor: "pointer",
+                    background: on ? "#F0F8F3" : "transparent" }}>
+                    <input type="checkbox" checked={on}
+                      onChange={(ev) => setTicked((t) => ({ ...t, [r.emp.id]: ev.target.checked }))}
+                      style={{ width: 15, height: 15, accentColor: C.ok }} />
+                    <span style={{ fontFamily: mono, fontSize: 10.5, color: C.dimmer, width: 22 }}>{i + 1}</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, minWidth: 190,
+                      textDecoration: on ? "line-through" : "none",
+                      color: on ? C.dim : C.ink }}>{r.emp.name}</span>
+                    <span style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, width: 76 }}>{r.emp.sap || ""}</span>
+                    <span style={{ fontSize: 12, color: C.dim, flex: 1 }}>{r.emp.position}</span>
+                    <span style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, width: 30 }}>{r.emp.crew}</span>
+                    <Chip code={r.code} small />
+                  </label>
+                );
+              })}
+            </div>
+          )}
+
+          <div style={{ padding: "10px 14px", fontFamily: mono, fontSize: 10.5, color: C.dim,
+            lineHeight: 1.7, borderTop: `1px solid ${C.line}` }}>
+            Ticks live in this page only — nothing is saved, and they clear when the day or the
+            status changes. For flights, pick <b>C-FIA</b> or <b>C-FOA</b> under &ldquo;exactly one
+            code&rdquo; to see only what FMG has booked, or the <b>Flying in</b> group to catch the
+            ones still to request as well.
+          </div>
+        </Panel>
+      )}
+
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>MODE</span>
         <select value={brush} onChange={(e) => setBrush(e.target.value)} style={{ minWidth: 250 }}>
@@ -2688,8 +3058,10 @@ function MenuItem({ code, label, onClick }) {
    LEAVE
    ============================================================ */
 
-function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
-  missingLeave, reinstateLeave, unregisteredLeave, registerLeave }) {
+function Leave({ employees, leaveRecords, addLeave, removeLeave, updateLeave, focusDate,
+  missingLeave, missingLeaveHidden, dismissLeaveMismatch, restoreLeaveMismatches,
+  reinstateLeave, unregisteredLeave, unregisteredLeaveHidden, dismissUnregistered,
+  registerLeave }) {
   const [empId, setEmpId] = useState(employees[6] ? employees[6].id : 1);
   const [code, setCode] = useState("AL");
   const [from, setFrom] = useState(focusDate);
@@ -2697,12 +3069,17 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
   const [note, setNote] = useState("");
   const [err, setErr] = useState("");
 
+  const [added, setAdded] = useState("");
   const submit = () => {
     if (to < from) { setErr("End date is before the start date."); return; }
     const res = addLeave({ empId: Number(empId), code, from, to, note });
-    if (res && res.error) { setErr(res.error); return; }
+    if (res && res.error) { setErr(res.error); setAdded(""); return; }
     setErr("");
     setNote("");
+    const e2 = employees.find((x) => x.id === Number(empId));
+    const n = diffDays(to, from) + 1;
+    setAdded(`${e2 ? e2.name : "Leave"} — ${code} ${fmtShort(from)} to ${fmtShort(to)}, ${n} day${n === 1 ? "" : "s"} on the roster.`);
+    setTimeout(() => setAdded(""), 4000);
   };
 
   /* ---- filters ---- */
@@ -2717,6 +3094,48 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
   const nameOf = (r) => {
     const e = employees.find((x) => x.id === r.empId);
     return e ? e.name : "";
+  };
+
+  /* Which records overlap another for the same person. Exact repeats are called
+     out separately, because those are almost always a double-click rather than
+     a genuine change of dates. */
+  const overlaps = useMemo(() => {
+    const m = {};
+    leaveRecords.forEach((a) => {
+      const hits = leaveRecords.filter((b) => b.id !== a.id && b.empId === a.empId
+        && b.from <= a.to && b.to >= a.from);
+      if (!hits.length) return;
+      m[a.id] = { n: hits.length,
+        exact: hits.some((b) => b.from === a.from && b.to === a.to && b.code === a.code) };
+    });
+    return m;
+  }, [leaveRecords]);
+  const overlapCount = Object.keys(overlaps).length;
+
+  const [editing, setEditing] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [rowErr, setRowErr] = useState("");
+  const [flash, setFlash] = useState("");
+
+  const startEdit = (r) => {
+    setEditing(r.id);
+    setDraft({ code: r.code, from: r.from, to: r.to, note: r.note || "" });
+    setRowErr("");
+  };
+  const saveEdit = (id) => {
+    const res = updateLeave(id, draft) || {};
+    if (res.error) { setRowErr(res.error); return; }
+    setEditing(null); setDraft(null); setRowErr("");
+    setFlash(`Saved. ${res.name} — ${res.days} day${res.days === 1 ? "" : "s"} written to the roster.`);
+    setTimeout(() => setFlash(""), 4000);
+  };
+  const doRemove = (r) => {
+    const res = removeLeave(r.id) || {};
+    if (res.error) { setRowErr(res.error); return; }
+    setFlash(res.held
+      ? `Removed. ${res.held} day${res.held === 1 ? "" : "s"} stayed on the roster because another record still covers them.`
+      : `Removed. ${res.cleared} day${res.cleared === 1 ? "" : "s"} went back to the pattern.`);
+    setTimeout(() => setFlash(""), 5000);
   };
 
   const types = ["All", ...Array.from(new Set(leaveRecords.map((r) => r.code))).sort()];
@@ -2759,13 +3178,22 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
             writes the leave back onto those days. Days where travel falls inside the leave are left
             alone — the flight still happens and shows the leave alongside it.
           </div>
+          <div style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 10, color: C.dim }}>
+            If the roster is right and the leave was taken off on purpose, dismiss it instead —
+            the × hides one day, and the button below hides the lot. Nothing on the roster or the
+            register changes, and dismissals are remembered.
+          </div>
           <div style={{ maxHeight: 150, overflowY: "auto", marginBottom: 10 }}>
             {missingLeave.slice(0, 60).map((x, i) => (
-              <div key={i} style={{ display: "flex", gap: 10, alignItems: "center",
+              <div key={x.key || i} style={{ display: "flex", gap: 10, alignItems: "center",
                 fontFamily: mono, fontSize: 11, padding: "2px 0", color: C.dim }}>
                 <span style={{ width: 108 }}>{fmtShort(x.iso)}</span>
                 <span style={{ flex: 1, color: C.ink }}>{x.name}</span>
                 <span>{codeText(x.now)} → {x.want}</span>
+                <button title="Dismiss this one — the roster is right"
+                  onClick={() => dismissLeaveMismatch(x)}
+                  style={{ background: "transparent", border: "none", color: C.dimmer,
+                    cursor: "pointer", fontFamily: mono, fontSize: 13, padding: "0 2px" }}>×</button>
               </div>
             ))}
             {missingLeave.length > 60 && (
@@ -2774,10 +3202,23 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
               </div>
             )}
           </div>
-          <Btn primary onClick={reinstateLeave}>
-            Reinstate {missingLeave.length} leave day{missingLeave.length === 1 ? "" : "s"}
-          </Btn>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <Btn primary onClick={reinstateLeave}>
+              Reinstate {missingLeave.length} leave day{missingLeave.length === 1 ? "" : "s"}
+            </Btn>
+            <Btn onClick={() => dismissLeaveMismatch(missingLeave)}>
+              Dismiss all {missingLeave.length}
+            </Btn>
+          </div>
         </Panel>
+      )}
+
+      {(!missingLeave || !missingLeave.length) && missingLeaveHidden > 0 && (
+        <div style={{ display: "flex", gap: 10, alignItems: "center", fontFamily: mono,
+          fontSize: 11, color: C.dimmer }}>
+          <span>{missingLeaveHidden} leave mismatch warning{missingLeaveHidden === 1 ? "" : "s"} dismissed</span>
+          <Btn small onClick={restoreLeaveMismatches}>Show them again</Btn>
+        </div>
       )}
 
       {unregisteredLeave && unregisteredLeave.length > 0 && (
@@ -2790,12 +3231,16 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
           </div>
           <div style={{ maxHeight: 160, overflowY: "auto", marginBottom: 10 }}>
             {unregisteredLeave.slice(0, 60).map((x, i) => (
-              <div key={i} style={{ display: "flex", gap: 10, alignItems: "center",
+              <div key={x.key || i} style={{ display: "flex", gap: 10, alignItems: "center",
                 fontFamily: mono, fontSize: 11, padding: "2px 0", color: C.dim }}>
                 <span style={{ flex: 1, color: C.ink }}>{x.name}</span>
                 <span>{x.code}</span>
                 <span style={{ width: 200 }}>{fmtShort(x.from)} – {fmtShort(x.to)}</span>
                 <span style={{ width: 54 }}>{x.days}d</span>
+                <button title="Dismiss this one — it does not belong on the register"
+                  onClick={() => dismissUnregistered(x)}
+                  style={{ background: "transparent", border: "none", color: C.dimmer,
+                    cursor: "pointer", fontFamily: mono, fontSize: 13, padding: "0 2px" }}>×</button>
               </div>
             ))}
             {unregisteredLeave.length > 60 && (
@@ -2804,10 +3249,23 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
               </div>
             )}
           </div>
-          <Btn primary onClick={registerLeave}>
-            Add {unregisteredLeave.length} block{unregisteredLeave.length === 1 ? "" : "s"} to the register
-          </Btn>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <Btn primary onClick={registerLeave}>
+              Add {unregisteredLeave.length} block{unregisteredLeave.length === 1 ? "" : "s"} to the register
+            </Btn>
+            <Btn onClick={() => dismissUnregistered(unregisteredLeave)}>
+              Dismiss all {unregisteredLeave.length}
+            </Btn>
+          </div>
         </Panel>
+      )}
+
+      {(!unregisteredLeave || !unregisteredLeave.length) && unregisteredLeaveHidden > 0 && (
+        <div style={{ display: "flex", gap: 10, alignItems: "center", fontFamily: mono,
+          fontSize: 11, color: C.dimmer }}>
+          <span>{unregisteredLeaveHidden} unregistered-leave warning{unregisteredLeaveHidden === 1 ? "" : "s"} dismissed</span>
+          <Btn small onClick={restoreLeaveMismatches}>Show them again</Btn>
+        </div>
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(300px, 370px) 1fr", gap: 18 }}>
@@ -2829,7 +3287,14 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
         <Field label="Note">
           <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="optional" style={{ width: "100%" }} />
         </Field>
-        {err && <div style={{ color: C.red, fontFamily: mono, fontSize: 11, marginBottom: 8 }}>{err}</div>}
+        {err && (
+          <div style={{ border: `1px solid ${C.red}`, background: "#FCEAE7", padding: "9px 11px",
+            marginBottom: 9, fontSize: 12.5, lineHeight: 1.6, color: C.red }}>{err}</div>
+        )}
+        {added && (
+          <div style={{ border: "1px solid #BEE0CD", background: "#F0F8F3", padding: "9px 11px",
+            marginBottom: 9, fontSize: 12.5, lineHeight: 1.6, color: C.ok }}>{added}</div>
+        )}
         <Btn primary onClick={submit}>Add leave</Btn>
         <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 12, lineHeight: 1.55 }}>
           If the leave covers days with travel booked or rostered work, a travel action is raised listing
@@ -2838,7 +3303,26 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
       </Panel>
 
       <Panel title="Leave register"
-        note={`${filtered.length} of ${leaveRecords.length} records · ${totalDays} days`} pad={0}>
+        note={`${filtered.length} of ${leaveRecords.length} records · ${totalDays} days`
+          + (overlapCount ? ` · ${overlapCount} overlapping` : "")} pad={0}>
+        {overlapCount > 0 && (
+          <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.line}`,
+            background: "#FCEAE7", fontSize: 12.5, lineHeight: 1.6, color: C.ink }}>
+            <b>{overlapCount} record{overlapCount === 1 ? " overlaps" : "s overlap"} another
+            for the same person.</b> They are flagged in the list below. Removing one is safe —
+            days that another record still covers stay on the roster, so deleting a duplicate no
+            longer takes the leave with it. Use <b>Edit</b> if the dates are simply wrong.
+          </div>
+        )}
+        {(flash || rowErr) && (
+          <div style={{ padding: "9px 12px", borderBottom: `1px solid ${C.line}`, fontSize: 12.5,
+            lineHeight: 1.6, background: rowErr ? "#FCEAE7" : "#F0F8F3",
+            color: rowErr ? C.red : C.ok }}>
+            {rowErr || flash}
+            {rowErr && <span style={{ marginLeft: 10 }}>
+              <Btn small onClick={() => setRowErr("")}>Close</Btn></span>}
+          </div>
+        )}
         <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.line}`, background: C.panel2,
           display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>FIND</span>
@@ -2880,20 +3364,74 @@ function Leave({ employees, leaveRecords, addLeave, removeLeave, focusDate,
               {sorted.map((r) => {
                 const emp = employees.find((e) => e.id === r.empId);
                 const on = r.from <= today && r.to >= today;
+                const ov = overlaps[r.id];
+                const isEditing = editing === r.id;
+
+                if (isEditing) {
+                  return (
+                    <tr key={r.id} style={{ background: "#FBF7F2" }}>
+                      <td style={{ ...td, whiteSpace: "nowrap" }}>{emp ? emp.name : "?"}</td>
+                      <td style={td}>
+                        <select value={draft.code} style={{ width: 110 }}
+                          onChange={(e) => setDraft((d) => ({ ...d, code: e.target.value }))}>
+                          {LEAVE_CODES.map((c) => <option key={c} value={c}>{c}</option>)}
+                        </select>
+                      </td>
+                      <td style={td}>
+                        <input type="date" value={draft.from} style={{ width: 140 }}
+                          onChange={(e) => setDraft((d) => ({ ...d, from: e.target.value }))} />
+                      </td>
+                      <td style={td} colSpan={2}>
+                        <input type="date" value={draft.to} style={{ width: 140 }}
+                          onChange={(e) => setDraft((d) => ({ ...d, to: e.target.value }))} />
+                      </td>
+                      <td style={td}>
+                        <input value={draft.note} placeholder="note" style={{ width: "100%" }}
+                          onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} />
+                      </td>
+                      <td style={{ ...td, color: C.dim, fontFamily: mono, fontSize: 10.5 }}>{r.by}</td>
+                      <td style={{ ...td, whiteSpace: "nowrap" }}>
+                        <span style={{ display: "inline-flex", gap: 6 }}>
+                          <Btn small primary onClick={() => saveEdit(r.id)}>Save</Btn>
+                          <Btn small onClick={() => { setEditing(null); setDraft(null); setRowErr(""); }}>
+                            Cancel
+                          </Btn>
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                }
+
                 return (
                   <tr key={r.id} style={{ background: on ? "#FDF4EE" : "transparent" }}>
                     <td style={{ ...td, whiteSpace: "nowrap" }}>
                       {emp ? emp.name : "?"}
                       {on && <span style={{ fontFamily: mono, fontSize: 9.5, color: C.orange,
                         marginLeft: 6 }}>on leave now</span>}
+                      {ov && <span title={ov.exact
+                        ? "The same dates are entered on another record as well"
+                        : "The dates run across another record for this person"}
+                        style={{ fontFamily: mono, fontSize: 9.5, color: C.red, marginLeft: 6,
+                          border: `1px solid #E3B6B2`, padding: "0 4px" }}>
+                        {ov.exact ? "same dates ×" + (ov.n + 1) : "overlaps " + ov.n}
+                      </span>}
                     </td>
                     <td style={td}><Chip code={r.code} /></td>
                     <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{fmtShort(r.from)}</td>
                     <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{fmtShort(r.to)}</td>
                     <td style={{ ...td, fontFamily: mono, fontSize: 11 }}>{diffDays(r.to, r.from) + 1}</td>
-                    <td style={{ ...td, color: C.dim, fontSize: 11.5 }}>{r.note}</td>
+                    <td style={{ ...td, color: C.dim, fontSize: 11.5 }}>
+                      {r.note}
+                      {r.editedAt && <span style={{ fontFamily: mono, fontSize: 9.5, color: C.dimmer,
+                        marginLeft: 6 }}>edited by {r.editedBy} {fmtStamp(r.editedAt)}</span>}
+                    </td>
                     <td style={{ ...td, color: C.dim, fontFamily: mono, fontSize: 10.5 }}>{r.by}</td>
-                    <td style={td}><Btn small danger onClick={() => removeLeave(r.id)}>Remove</Btn></td>
+                    <td style={{ ...td, whiteSpace: "nowrap" }}>
+                      <span style={{ display: "inline-flex", gap: 6 }}>
+                        <Btn small onClick={() => startEdit(r)}>Edit</Btn>
+                        <Btn small danger onClick={() => doRemove(r)}>Remove</Btn>
+                      </span>
+                    </td>
                   </tr>
                 );
               })}
@@ -3039,7 +3577,8 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
   const applyRows = () => {
     const chosen = rows.filter((r) => r.use && r.empId && r.date)
       .map((r) => ({ ...r, empId: Number(r.empId) }));
-    applyTravelBatch(chosen);
+    const report = applyTravelBatch(chosen) || {};
+    setKeptReport(report.kept ? report : null);
     chosen.forEach((r) => {
       const emp = employees.find((e) => e.id === r.empId);
       setTravel((t) => [...t, { id: uid("T"), empId: r.empId,
@@ -3053,6 +3592,7 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
     letterSpacing: ".1em", color: C.dim, textTransform: "uppercase", borderBottom: `1px solid ${C.line2}` };
   const td = { padding: "5px 8px", borderBottom: `1px solid ${C.line}`, fontSize: 12 };
   const [showDone, setShowDone] = useState(false);
+  const [keptReport, setKeptReport] = useState(null);
 
   /* ---- filters for the applied travel list ---- */
   const [tq, setTq] = useState("");
@@ -3239,6 +3779,29 @@ function Travel({ employees, travel, setTravel, setCell, actions, user, applyTra
           <div style={{ padding: 12, display: "flex", gap: 10 }}>
             <Btn primary onClick={applyRows} disabled={!rows.some((r) => r.use && r.empId)}>Apply to roster</Btn>
             <Btn onClick={() => setRows([])}>Discard</Btn>
+          </div>
+        </Panel>
+      )}
+
+      {keptReport && (
+        <Panel title="Days left as they were"
+          note={`${keptReport.kept} day${keptReport.kept === 1 ? "" : "s"}`}>
+          <div style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 10 }}>
+            The flights went on. These days already carried something set by hand — night shift,
+            leave, training — so they were left alone rather than being written back to day shift.
+            If any of them should have changed, change them on the roster.
+          </div>
+          <div style={{ fontFamily: mono, fontSize: 11, color: C.dim, lineHeight: 1.7,
+            maxHeight: 150, overflowY: "auto" }}>
+            {(keptReport.keptDetail || []).map((t, i) => <div key={i}>{t}</div>)}
+            {keptReport.kept > (keptReport.keptDetail || []).length && (
+              <div style={{ color: C.dimmer }}>
+                and {keptReport.kept - keptReport.keptDetail.length} more
+              </div>
+            )}
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <Btn small onClick={() => setKeptReport(null)}>Dismiss</Btn>
           </div>
         </Panel>
       )}
@@ -3450,7 +4013,30 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
   };
 
   const pending = requests.filter((r) => r.status === "pending");
-  const done = requests.filter((r) => r.status !== "pending");
+  const allDone = requests.filter((r) => r.status !== "pending");
+
+  /* ---- filters for the actioned list ---- */
+  const [dEmp, setDEmp] = useState("All");
+  const [dTravelFrom, setDTravelFrom] = useState("");
+  const [dTravelTo, setDTravelTo] = useState("");
+  const [dActionedFrom, setDActionedFrom] = useState("");
+  const [dActionedTo, setDActionedTo] = useState("");
+  const [confirmRemove, setConfirmRemove] = useState(null);
+
+  const dFiltered = dEmp !== "All" || dTravelFrom || dTravelTo || dActionedFrom || dActionedTo;
+  const done = allDone.filter((r) => {
+    if (dEmp !== "All" && String(r.empId) !== String(dEmp)) return false;
+    const days = (r.changes || []).map((c) => c.date).filter(Boolean).sort();
+    if (dTravelFrom && !days.some((d) => d >= dTravelFrom)) return false;
+    if (dTravelTo && !days.some((d) => d <= dTravelTo)) return false;
+    /* actionedAt is a full timestamp; compare on the date part only */
+    const act = r.actionedAt ? new Date(r.actionedAt) : null;
+    const actIso = act && !isNaN(act) ? toISO(new Date(act.getTime() - act.getTimezoneOffset() * 60000)) : "";
+    if (dActionedFrom && (!actIso || actIso < dActionedFrom)) return false;
+    if (dActionedTo && (!actIso || actIso > dActionedTo)) return false;
+    return true;
+  });
+  const doneEmpIds = Array.from(new Set(allDone.map((r) => r.empId)));
 
   return (
     <div style={{ display: "grid", gap: 18 }}>
@@ -3634,15 +4220,56 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
                     : "Mark as requested with travel team"}
                 </Btn>
                 <Btn danger onClick={() => declineRequest(r.id)}>Decline</Btn>
-                <Btn danger onClick={() => removeRequest(r.id)}>Remove</Btn>
+                {confirmRemove === r.id ? (
+                  <>
+                    <Btn danger onClick={() => { removeRequest(r.id); setConfirmRemove(null); }}>
+                      Yes, delete the request
+                    </Btn>
+                    <Btn small onClick={() => setConfirmRemove(null)}>Keep it</Btn>
+                  </>
+                ) : (
+                  <Btn danger onClick={() => setConfirmRemove(r.id)}
+                    title="Deletes the request only. The roster is not touched.">Remove</Btn>
+                )}
               </div>
             </div>
           );
         })}
       </Panel>
 
-      {done.length > 0 && (
-        <Panel title="Actioned" note={`${done.length} · reason and who raised it are kept`} pad={0}>
+      {allDone.length > 0 && (
+        <Panel title="Actioned"
+          note={`${done.length} of ${allDone.length} · reason and who raised it are kept`} pad={0}>
+          <div style={{ padding: "10px 12px", borderBottom: `1px solid ${C.line}`, background: C.panel2,
+            display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>WHO</span>
+            <select value={dEmp} onChange={(e) => setDEmp(e.target.value)} style={{ maxWidth: 200 }}>
+              <option value="All">Everyone</option>
+              {doneEmpIds.map((id) => {
+                const e2 = employees.find((x) => x.id === id);
+                return <option key={id} value={id}>{e2 ? e2.name : `#${id}`}</option>;
+              })}
+            </select>
+            <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>TRAVEL DATE</span>
+            <input type="date" value={dTravelFrom} title="Travel on or after"
+              onChange={(e) => setDTravelFrom(e.target.value)} />
+            <input type="date" value={dTravelTo} title="Travel on or before"
+              onChange={(e) => setDTravelTo(e.target.value)} />
+            <span style={{ fontFamily: disp, fontSize: 12, letterSpacing: ".12em", color: C.dim }}>ACTIONED</span>
+            <input type="date" value={dActionedFrom} title="Actioned on or after"
+              onChange={(e) => setDActionedFrom(e.target.value)} />
+            <input type="date" value={dActionedTo} title="Actioned on or before"
+              onChange={(e) => setDActionedTo(e.target.value)} />
+            {dFiltered && (
+              <Btn small danger onClick={() => { setDEmp("All"); setDTravelFrom(""); setDTravelTo("");
+                setDActionedFrom(""); setDActionedTo(""); }}>Clear filters</Btn>
+            )}
+          </div>
+          {done.length === 0 && (
+            <div style={{ padding: 16, fontFamily: mono, fontSize: 11.5, color: C.dim }}>
+              Nothing matches those filters. {allDone.length} actioned request{allDone.length === 1 ? " is" : "s are"} hidden.
+            </div>
+          )}
           {done.map((r) => (
             <div key={r.id} style={{ padding: "9px 16px", borderBottom: `1px solid ${C.line}` }}>
               <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -3654,7 +4281,20 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
                 <div style={{ fontFamily: mono, fontSize: 11,
                   color: r.status === "declined" ? C.red : C.ok }}>{r.status}</div>
                 <div style={{ flex: 1 }} />
-                <Btn small danger onClick={() => removeRequest(r.id)}>Remove</Btn>
+                {confirmRemove === r.id ? (
+                  <>
+                    <span style={{ fontFamily: mono, fontSize: 10.5, color: C.red }}>
+                      Delete this record? The roster stays exactly as it is.
+                    </span>
+                    <Btn small danger onClick={() => { removeRequest(r.id); setConfirmRemove(null); }}>
+                      Yes, delete
+                    </Btn>
+                    <Btn small onClick={() => setConfirmRemove(null)}>Keep it</Btn>
+                  </>
+                ) : (
+                  <Btn small danger onClick={() => setConfirmRemove(r.id)}
+                    title="Deletes the record of the request. The roster is not touched.">Remove</Btn>
+                )}
               </div>
               <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 3 }}>
                 {(r.changes || []).map((c) => `${fmtShort(c.date)} ${
@@ -3672,6 +4312,18 @@ function Requests({ employees, requests, submitRequest, markRequested, declineRe
               )}
             </div>
           ))}
+          <div style={{ padding: "12px 16px", borderTop: `1px solid ${C.line}`, background: C.panel2,
+            fontFamily: mono, fontSize: 10.5, color: C.dim, lineHeight: 1.7 }}>
+            <b style={{ color: C.ink }}>What Remove does.</b> It deletes the record of the request from
+            this list and nothing else. The roster change that was already applied stays exactly as it
+            is — removing a request never puts a shift or a flight back. The deletion itself is
+            written to the change log, so who removed what is still traceable, but the reason, the
+            before-and-after and who raised it are gone from here for good.
+            <br />
+            Nothing on this list is archived automatically, so it grows until somebody clears it. If it
+            has got long, filter by an actioned date range above and remove the old ones — or leave
+            them, because a long list costs nothing but scrolling.
+          </div>
         </Panel>
       )}
     </div>
@@ -3713,7 +4365,8 @@ function StripCells({ cells, marked }) {
    PEOPLE
    ============================================================ */
 
-function People({ employees, updateEmployee, changePattern, removePatternSegment, thresholds,
+function People({ employees, updateEmployee, changePattern, patternChangePreview,
+  removePatternSegment, thresholds,
   setThresholds, focusDate, addPerson, customPatterns, savePattern, deletePattern, loadImported,
   isAdmin, requireAdmin, userName }) {
   const [confirmImport, setConfirmImport] = useState(false);
@@ -3746,6 +4399,7 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
   const [pPattern, setPPattern] = useState("2:1");
   const [pFrom, setPFrom] = useState(focusDate);
   const [pAnchor, setPAnchor] = useState(focusDate);
+  const [pResult, setPResult] = useState(null);
 
   const emp = employees.find((e) => e.id === Number(pEmp));
 
@@ -3778,12 +4432,76 @@ function People({ employees, updateEmployee, changePattern, removePatternSegment
               <input type="date" value={pAnchor} onChange={(e) => setPAnchor(e.target.value)} style={{ width: "100%" }} />
             </Field>
           </div>
-          <Btn primary onClick={() => changePattern(Number(pEmp), pFrom, pPattern, pAnchor)}>
-            Apply pattern change
-          </Btn>
+          {(() => {
+            const plan = patternChangePreview(Number(pEmp), pFrom, pPattern, pAnchor);
+            const firstDays = plan.error ? [] : Array.from({ length: 21 },
+              (_, i) => addDays(pFrom, i));
+            return (
+              <>
+                {plan.error ? (
+                  <div style={{ border: `1px solid ${C.red}`, background: "#FCEAE7", padding: "9px 11px",
+                    marginBottom: 10, fontSize: 12.5, color: C.red }}>{plan.error}</div>
+                ) : (
+                  <div style={{ border: `1px solid ${C.line}`, background: C.panel2, padding: "9px 11px",
+                    marginBottom: 10, fontFamily: mono, fontSize: 10.5, color: C.dim, lineHeight: 1.7 }}>
+                    <div style={{ color: C.ink }}>
+                      {plan.emp.name}: {plan.prev ? plan.prev.pattern : "—"} → <b>{pPattern}</b> from {fmtShort(pFrom)}
+                    </div>
+                    <div>{plan.label}</div>
+                    <div>{plan.cleared} manual day{plan.cleared === 1 ? "" : "s"} cleared · {plan.kept} leave
+                      and confirmed-travel day{plan.kept === 1 ? "" : "s"} kept</div>
+                    {plan.already && <div style={{ color: C.orange }}>
+                      Replaces the segment that already starts on that date.</div>}
+                    <div style={{ marginTop: 6, color: C.ink }}>First three weeks as it would read:</div>
+                    <div style={{ display: "flex", gap: 1, flexWrap: "wrap", marginTop: 3 }}>
+                      {firstDays.map((d) => {
+                        const seg = { from: pFrom, pattern: pPattern, anchor: pAnchor };
+                        const fake = { ...plan.emp, patterns: [seg] };
+                        const c = patternCode(fake, d);
+                        const [bg, fg, br] = codeStyle(c);
+                        return (
+                          <span key={d} title={fmtLong(d)} style={{ background: bg, color: fg,
+                            border: `1px solid ${br}`, fontFamily: mono, fontSize: 9,
+                            padding: "2px 3px", minWidth: 30, textAlign: "center" }}>
+                            {codeText(c) || "—"}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                <Btn primary disabled={!!plan.error} onClick={() => {
+                  const res = changePattern(Number(pEmp), pFrom, pPattern, pAnchor);
+                  setPResult(res || { error: "Nothing came back — the change was not applied." });
+                }}>
+                  Apply pattern change
+                </Btn>
+              </>
+            );
+          })()}
+
+          {pResult && (
+            <div style={{ marginTop: 10, padding: "9px 11px", fontSize: 12.5, lineHeight: 1.6,
+              border: `1px solid ${pResult.ok ? "#BEE0CD" : C.red}`,
+              background: pResult.ok ? "#F0F8F3" : "#FCEAE7",
+              color: pResult.ok ? C.ok : C.red }}>
+              {pResult.ok ? (
+                <>Done. {pResult.name} is on <b>{pResult.pattern}</b> from {fmtShort(pResult.from)},
+                  swing starting {fmtShort(pResult.anchor)}. {pResult.cleared} manual day
+                  {pResult.cleared === 1 ? "" : "s"} cleared, {pResult.kept} leave and confirmed-travel
+                  day{pResult.kept === 1 ? "" : "s"} kept. Check it on the Roster tab — and undo is
+                  there if it is not what you wanted.</>
+              ) : pResult.error}
+              <div style={{ marginTop: 6 }}>
+                <Btn small onClick={() => setPResult(null)}>Close</Btn>
+              </div>
+            </div>
+          )}
+
           <div style={{ fontFamily: mono, fontSize: 10.5, color: C.dim, marginTop: 12, lineHeight: 1.55 }}>
             Everything from that date forward is regenerated on the new pattern. Manual edits after that
-            date are cleared, so change the pattern first and enter travel and leave afterwards.
+            date are cleared — leave and confirmed travel are kept — so change the pattern first and
+            enter the rest afterwards.
           </div>
 
           {emp && (
