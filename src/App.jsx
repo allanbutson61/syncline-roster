@@ -13,6 +13,11 @@ import LOGO from "./logo.js";
    Seeded from Roster_20240409.xlsx
    ============================================================ */
 
+/* ---------- BUILD STAMP ----------
+   Shown in the top right of every screen so anyone can say which version they
+   are looking at without guessing. Bump it whenever the file is replaced. */
+const BUILD = "v14 · 1 Sep 2026 · day-check-fix";
+
 /* ---------- BRAND ---------- */
 
 const C = {
@@ -2113,6 +2118,11 @@ function Roster({ profile }) {
               : sync.state === "error" ? "NOT SAVED"
               : sync.at ? `${STORAGE_MODE === "local" ? "saved to this browser" : "shared roster"} ${fmtStamp(sync.at)}`
               : STORAGE_MODE === "local" ? "nothing saved yet" : "shared roster"}
+          </span>
+          <span title="Which version of the roster you are looking at"
+            style={{ fontFamily: mono, fontSize: 10, color: C.dimmer,
+              border: `1px solid ${C.line}`, padding: "1px 6px", borderRadius: 2 }}>
+            {BUILD}
           </span>
           <Btn small onClick={loadShared}>Refresh</Btn>
         </div>
