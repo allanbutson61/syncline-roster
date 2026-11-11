@@ -16,7 +16,7 @@ import LOGO from "./logo.js";
 /* ---------- BUILD STAMP ----------
    Shown in the top right of every screen so anyone can say which version they
    are looking at without guessing. Bump it whenever the file is replaced. */
-const BUILD = "v14 · 1 Sep 2026 · day-check-fix";
+const BUILD = "v15 · 11 Nov 2026 · hide-demobbed";
 
 /* ---------- BRAND ---------- */
 
@@ -2453,7 +2453,7 @@ function Dashboard({ today, daily, dayIndex, focusDate, setFocusDate, thresholds
    ROSTER GRID
    ============================================================ */
 
-function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, gridStart, setGridStart, gridDays, setGridDays, cellW,
+function Grid({ watch, notes, setNote, leaveDays, visibleEmployees: filteredEmployees, employees, gridStart, setGridStart, gridDays, setGridDays, cellW,
   setCellW, codeFor, undo, undoStack,
   setCell, brush, setBrush, painting, setPainting, daily, dayIndex, thresholds, crews, cats,
   crewFilter, setCrewFilter, catFilter, setCatFilter, search, setSearch,
@@ -2461,6 +2461,11 @@ function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, g
   focusDate, setFocusDate, overrides, menu, setMenu, anomalies }) {
 
   const [showPicker, setShowPicker] = useState(false);
+
+  /* Anyone demobilised before the From date has left — they have no roster in
+     this window, so they drop off the grid, the Day Check and the export. */
+  const visibleEmployees = filteredEmployees.filter((e) => !(e.demobDate && e.demobDate < gridStart));
+  const leftBefore = filteredEmployees.length - visibleEmployees.length;
 
   /* ---- Day check ----
      Working down a list against an FMG manifest or the sign-in sheet. The ticks
@@ -2658,6 +2663,7 @@ function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, g
           )}
           <span style={{ fontFamily: mono, fontSize: 11, color: C.dim, marginLeft: "auto" }}>
             showing {visibleEmployees.length} of {employees.length}
+            {leftBefore ? ` · ${leftBefore} demobilised before ${fmtShort(gridStart)} hidden` : ""}
             {statusFilter ? ` · ${statusLabel(statusFilter)} on ${fmtShort(statusOn)}` : ""}</span>
           <Btn primary onClick={() => {
             const head = ["Employee", "SAP No", "Crew", "Pattern", "Category", "Position"]
@@ -2669,7 +2675,7 @@ function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, g
             visibleEmployees.forEach((emp) => {
               const seg = segmentFor(emp, gridStart);
               rows.push([emp.name, emp.sap || "", emp.crew, seg ? seg.pattern : "", emp.category, emp.position]
-                .concat(gridDates.map((d) => codeText(codeFor(emp, d)))));
+                .concat(gridDates.map((d) => (emp.demobDate && d > emp.demobDate ? "" : codeText(codeFor(emp, d))))));
             });
             rows.push([]);
             rows.push(["Operators on site", "", "", "", "", ""]
@@ -2908,7 +2914,8 @@ function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, g
                   const outside = (emp.mobeDate && iso < emp.mobeDate)
                     || (emp.demobDate && iso > emp.demobDate);
                   const preMobe = outside && !code;
-                  const postDemob = false;
+                  /* nothing shows after the demobilisation date — the person has left */
+                  const postDemob = !!(emp.demobDate && iso > emp.demobDate);
                   const [bg, fg, br] = codeStyle(code);
                   const isOverride = (emp.id + "|" + iso) in overrides;
                   const st = travelState(code);
@@ -2928,7 +2935,7 @@ function Grid({ watch, notes, setNote, leaveDays, visibleEmployees, employees, g
                         setPainting(true); setCell(emp.id, iso, brush);
                       }}
                       onMouseEnter={() => { if (painting && brush !== "__select") setCell(emp.id, iso, brush); }}
-                      title={`${emp.name} · ${fmtLong(iso)} · ${preMobe ? "not yet mobilised"
+                      title={`${emp.name} · ${fmtLong(iso)} · ${postDemob ? "demobilised " + fmtShort(emp.demobDate) : preMobe ? "not yet mobilised"
                         : code ? (CODES[code] ? CODES[code].label : code)
                         : outside ? "outside the mobilisation dates" : "not rostered"}${
                         wl ? "\nAlso waitlisted: " + (CODES[wl.code] ? CODES[wl.code].label : wl.code) : ""}${
